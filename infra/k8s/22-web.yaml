@@ -1,0 +1,50 @@
+# Frontend (React build servido por Nginx) — namespace ingressos.
+# O Nginx serve o SPA e faz proxy de /api -> Service "api" (ver nginx.conf).
+# Imagem construída com infra/docker/web.prod.Dockerfile.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: ingressos
+  labels:
+    app: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: ingressos/web:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: ingressos
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 80

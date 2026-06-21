@@ -1,0 +1,36 @@
+# Worker — consumidor da fila SQS (namespace ingressos).
+# Não expõe porta (não tem Service): só consome a fila e chama a API para
+# efetivar a reserva, no ritmo de WORKER_RATE_MS (backpressure).
+#
+# Mantemos 1 réplica para que o WORKER_RATE_MS represente o ritmo agregado de
+# consumo (mais réplicas = maior vazão; útil de demonstrar no teste de carga).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: ingressos
+  labels:
+    app: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: ingressos/worker:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: ingressos-config
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              memory: "128Mi"

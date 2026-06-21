@@ -1,0 +1,13 @@
+# Mantém o build context enxuto: nada de dependências/builds locais nem segredos.
+**/node_modules
+**/dist
+**/.env
+**/*.log
+.git
+.gitignore
+.editorconfig
+docs
+infra/terraform
+infra/k8s
+README.md
+CLAUDE.MD

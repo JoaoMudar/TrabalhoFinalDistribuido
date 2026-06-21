@@ -1,0 +1,48 @@
+# Redis — locks de assento com TTL + contadores/estado da fila virtual.
+# Efêmero de propósito: o estado aqui é transitório (locks expiram, a fila é
+# reprocessável). Se o pod reiniciar, o sistema se recompõe.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: ingressos-data
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: ingressos-data
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379

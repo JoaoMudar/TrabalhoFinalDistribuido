@@ -1,0 +1,14 @@
+# Kustomization — aplica todos os manifests de uma vez, na ordem correta.
+# Uso: kubectl apply -k infra/k8s
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 00-namespaces.yaml
+  - 01-config.yaml
+  - 10-mongo.yaml
+  - 11-redis.yaml
+  - 12-localstack.yaml
+  - 20-api.yaml
+  - 21-worker.yaml
+  - 22-web.yaml
+  - 30-ingress.yaml

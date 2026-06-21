@@ -1,0 +1,31 @@
+# Ingress — ponto de entrada HTTP do cluster para o frontend.
+#
+# Todo o tráfego do host "ingressos.local" vai para o Service "web", que serve
+# o SPA e faz o proxy interno de /api para a API. Assim só há UM ponto de
+# entrada externo (boa prática de isolamento).
+#
+# Requer um Ingress Controller no cluster:
+#   - kind     : kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml
+#   - minikube : minikube addons enable ingress
+#   - k3s/EC2  : já vem com Traefik (troque ingressClassName para "traefik")
+#
+# Acesso local: adicionar "127.0.0.1 ingressos.local" ao hosts e abrir
+# http://ingressos.local  (ou usar `kubectl port-forward` — ver README).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingressos-web
+  namespace: ingressos
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ingressos.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80

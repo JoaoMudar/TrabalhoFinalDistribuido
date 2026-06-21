@@ -1,0 +1,13 @@
+# Provedor de dashboards do Grafana (Fase 7).
+# Carrega os JSONs da pasta montada em /var/lib/grafana/dashboards.
+apiVersion: 1
+providers:
+  - name: ingressos
+    orgId: 1
+    folder: "Ingressos"
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

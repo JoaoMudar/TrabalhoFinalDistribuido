@@ -1,0 +1,150 @@
+# docker-compose de desenvolvimento local (Fase 0).
+#
+# Sobe toda a infraestrutura emulada + os serviços da aplicação:
+#   - localstack : emula SQS, SNS e Lambda (mensageria + serverless)
+#   - redis      : locks com TTL + posição na fila virtual
+#   - mongo      : dados (eventos, assentos, pedidos, usuários)
+#   - api        : backend REST (Fastify)
+#   - worker     : consumidor da fila (heartbeat na Fase 0)
+#   - web        : frontend React (Vite dev server)
+#
+# Uso: `docker-compose up --build`  ->  http://localhost:5173 e http://localhost:8080/health
+
+services:
+  localstack:
+    image: localstack/localstack:3
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=sqs,sns,lambda,ses
+      - DEBUG=0
+      - AWS_DEFAULT_REGION=us-east-1
+      # Rede em que o LocalStack roda os containers de Lambda (= rede do compose),
+      # para a Lambda conseguir falar de volta com o LocalStack (SES).
+      - LAMBDA_DOCKER_NETWORK=fabiano_default
+    volumes:
+      # Script roda quando o LocalStack está pronto.
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh
+      # Necessário para o LocalStack executar Lambdas (executor via Docker).
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 })"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - HOST=0.0.0.0
+      - MONGO_URL=mongodb://mongo:27017/ingressos
+      - REDIS_URL=redis://redis:6379
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_REGION=us-east-1
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/worker.Dockerfile
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - QUEUE_NAME=ticket-purchase-queue
+      # O worker chama a API para efetivar a reserva (lock + persistência).
+      - API_URL=http://api:8080
+      # Ritmo de consumo da fila (ms entre compras) — demonstra o backpressure.
+      - WORKER_RATE_MS=500
+      # Porta onde o worker expõe /metrics para o Prometheus (Fase 7).
+      - METRICS_PORT=9100
+    depends_on:
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      # O proxy /api do Vite aponta para o serviço "api" na rede do compose.
+      - API_PROXY_TARGET=http://api:8080
+    volumes:
+      # Bind mount do código-fonte: o Vite faz hot-reload sem rebuild da imagem.
+      # As dependências instaladas na imagem (/repo/node_modules) são preservadas.
+      - ./apps/web:/repo/apps/web
+    depends_on:
+      - api
+
+  # --- Observabilidade (Fase 7) ---
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+    depends_on:
+      - api
+      - worker
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      # Acesso simplificado para a demo/apresentação (sem login).
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+volumes:
+  mongo-data:

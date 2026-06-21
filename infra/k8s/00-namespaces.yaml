@@ -1,0 +1,24 @@
+# Namespaces — isolamento de componentes (critério de avaliação do trabalho).
+#
+# Separamos os componentes em dois namespaces para demonstrar isolamento e
+# fronteiras claras entre camadas:
+#   - ingressos-data : infraestrutura com estado (Mongo, Redis, LocalStack/AWS)
+#   - ingressos      : aplicação sem estado (API, worker, web)
+#
+# A comunicação entre namespaces usa DNS do cluster (FQDN), ex.:
+#   redis.ingressos-data.svc.cluster.local
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingressos-data
+  labels:
+    app.kubernetes.io/part-of: ingressos
+    camada: dados
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingressos
+  labels:
+    app.kubernetes.io/part-of: ingressos
+    camada: aplicacao

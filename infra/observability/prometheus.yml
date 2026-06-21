@@ -1,0 +1,24 @@
+# Configuração do Prometheus (Fase 7).
+# Faz scrape das métricas da API e do worker a cada 5s.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "api"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8080"]
+        labels:
+          service: api
+
+  - job_name: "worker"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:9100"]
+        labels:
+          service: worker
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

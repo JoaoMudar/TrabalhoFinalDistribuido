@@ -1,0 +1,31 @@
+# ConfigMap com a configuração compartilhada da aplicação (namespace ingressos).
+#
+# Em dev local (docker-compose) essas variáveis vêm do compose; no K8s vêm
+# daqui. Os endereços usam FQDN dos Services no namespace de dados.
+#
+# Observação (Fase 6 / AWS Academy): para apontar à AWS real, basta esvaziar
+# AWS_ENDPOINT_URL (o SDK passa a usar a cadeia de credenciais padrão / LabRole)
+# e ajustar MONGO_URL/REDIS_URL se forem gerenciados.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingressos-config
+  namespace: ingressos
+  labels:
+    app.kubernetes.io/part-of: ingressos
+data:
+  # --- Bancos (namespace ingressos-data) ---
+  MONGO_URL: "mongodb://mongo.ingressos-data.svc.cluster.local:27017/ingressos"
+  REDIS_URL: "redis://redis.ingressos-data.svc.cluster.local:6379"
+  # --- Mensageria (LocalStack no cluster; AWS real na Fase 6) ---
+  AWS_ENDPOINT_URL: "http://localstack.ingressos-data.svc.cluster.local:4566"
+  AWS_REGION: "us-east-1"
+  QUEUE_NAME: "ticket-purchase-queue"
+  TOPIC_NAME: "order-confirmed"
+  # --- Worker ---
+  # Endpoint interno da API que o worker chama para efetivar a reserva.
+  API_URL: "http://api.ingressos.svc.cluster.local:8080"
+  # Ritmo de consumo da fila (ms entre compras) — demonstra o backpressure.
+  WORKER_RATE_MS: "500"
+  # --- Logs ---
+  LOG_LEVEL: "info"

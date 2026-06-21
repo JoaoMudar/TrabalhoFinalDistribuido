@@ -1,0 +1,91 @@
+# LocalStack — emula SQS, SNS e SES dentro do cluster (mensageria/serverless).
+#
+# IMPORTANTE: aqui habilitamos apenas sqs, sns e ses. A EXECUÇÃO da Lambda de
+# e-mail NÃO roda neste modo, porque o LocalStack executa Lambdas via socket do
+# Docker — o que não está disponível dentro do pod. O fluxo SNS->Lambda->SES é
+# demonstrado no docker-compose (Fase 3) e será real na AWS (Fase 6, Learner Lab).
+# No cluster, o pagamento ainda publica no SNS normalmente (apenas não há
+# consumidor Lambda anexado).
+#
+# O ConfigMap abaixo cria a fila e o tópico no boot do LocalStack (mesmo papel
+# do scripts/localstack-init.sh no docker-compose).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: localstack-init
+  namespace: ingressos-data
+data:
+  init.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    echo "[localstack-init] criando recursos de mensageria..."
+    awslocal sqs create-queue \
+      --queue-name ticket-purchase-queue \
+      --attributes VisibilityTimeout=30
+    awslocal sns create-topic --name order-confirmed
+    awslocal ses verify-email-identity --email-address no-reply@ingressos.local
+    echo "[localstack-init] recursos criados."
+    awslocal sqs list-queues
+    awslocal sns list-topics
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: localstack
+  namespace: ingressos-data
+  labels:
+    app: localstack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: localstack
+  template:
+    metadata:
+      labels:
+        app: localstack
+    spec:
+      containers:
+        - name: localstack
+          image: localstack/localstack:3
+          ports:
+            - containerPort: 4566
+          env:
+            - name: SERVICES
+              value: "sqs,sns,ses"
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1"
+            - name: DEBUG
+              value: "0"
+          volumeMounts:
+            - name: init
+              mountPath: /etc/localstack/init/ready.d
+          readinessProbe:
+            httpGet:
+              path: /_localstack/health
+              port: 4566
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              memory: "1Gi"
+      volumes:
+        - name: init
+          configMap:
+            name: localstack-init
+            defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: localstack
+  namespace: ingressos-data
+spec:
+  selector:
+    app: localstack
+  ports:
+    - port: 4566
+      targetPort: 4566

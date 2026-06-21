@@ -1,0 +1,34 @@
+# Dependências
+node_modules/
+**/node_modules/
+
+# Builds
+dist/
+build/
+*.tsbuildinfo
+
+# Variáveis de ambiente
+.env
+.env.local
+*.env
+!*.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# LocalStack / Docker volumes
+.localstack/
+volume/
+
+# Editores / SO
+.DS_Store
+.idea/
+.vscode/
