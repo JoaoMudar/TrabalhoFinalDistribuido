@@ -1,7 +1,7 @@
 # ============================================================================
 # WORKERS — Launch Template + Auto Scaling Group.
-# O user-data recebe o IP PRIVADO do master automaticamente; cada worker que
-# o ASG subir faz join sozinha. Resolve o "ASG não joina direto".
+# O user-data recebe o DNS do NLB (endpoint do k3s API) automaticamente; cada
+# worker que o ASG subir faz join sozinha. Resolve o "ASG não joina direto".
 # ============================================================================
 
 resource "aws_launch_template" "worker" {
@@ -24,10 +24,10 @@ resource "aws_launch_template" "worker" {
     }
   }
 
-  # IP privado do master injetado no template do agent.
+  # DNS do NLB (endpoint estável do k3s API) injetado no template do agent.
   user_data = base64encode(templatefile("${path.module}/userdata/worker.tpl", {
-    k3s_token          = var.k3s_token
-    master_private_ip  = aws_instance.master.private_ip
+    k3s_token     = var.k3s_token
+    master_lb_dns = aws_lb.main.dns_name
   }))
 
   tag_specifications {
@@ -46,13 +46,16 @@ resource "aws_autoscaling_group" "workers" {
   max_size            = var.worker_count + 2
   vpc_zone_identifier = data.aws_subnets.default.ids
 
+  # Workers entram no target group da app (80) p/ o NLB distribuir HTTP nelas.
+  target_group_arns = [aws_lb_target_group.app.arn]
+
   launch_template {
     id      = aws_launch_template.worker.id
     version = "$Latest"
   }
 
-  # Garante que o master (e seu IP privado) já existam antes de subir workers.
-  depends_on = [aws_instance.master]
+  # Garante que o master (ASG) já exista antes de subir as workers.
+  depends_on = [aws_autoscaling_group.master]
 
   tag {
     key                 = "Name"

@@ -34,8 +34,8 @@ locals {
   ))
 }
 
-# Subnets da VPC default APENAS nas AZs utilizáveis — o master pega a primeira
-# e o ASG distribui as workers entre todas elas.
+# Subnets da VPC default APENAS nas AZs utilizáveis — os ASGs (master e
+# workers) e o NLB se distribuem entre todas elas.
 data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"

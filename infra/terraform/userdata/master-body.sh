@@ -1,7 +1,7 @@
 # ==========================================================================
 # CORPO DO USER-DATA DO MASTER — bash puro (NÃO é template).
 # Usa as variáveis definidas no bloco de config (master-config.tpl).
-# Não precisa associar Elastic IP aqui: o Terraform faz via aws_eip_association.
+# Não há Elastic IP: o endpoint estável é o DNS do NLB (--tls-san abaixo).
 # ==========================================================================
 
 REPO_DIR='/opt/ingressos'
@@ -11,12 +11,12 @@ export DEBIAN_FRONTEND=noninteractive
 # --------------------------------------------------------------------------
 # 1. Instala o k3s SERVER com token estático
 # --------------------------------------------------------------------------
-# --tls-san ${MASTER_EIP}: inclui o Elastic IP no certificado, permitindo
-# usar kubectl de fora pelo IP público (as workers fazem join pelo IP privado).
+# --tls-san ${MASTER_LB_DNS}: inclui o DNS do NLB no certificado, permitindo
+# usar kubectl de fora pelo load balancer (as workers fazem join pelo mesmo DNS).
 echo ">>> [master] instalando k3s server..."
 curl -sfL https://get.k3s.io | \
   K3S_TOKEN="${K3S_TOKEN_VALUE}" \
-  INSTALL_K3S_EXEC="server --write-kubeconfig-mode 644 --tls-san ${MASTER_EIP}" \
+  INSTALL_K3S_EXEC="server --write-kubeconfig-mode 644 --tls-san ${MASTER_LB_DNS}" \
   sh -
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml

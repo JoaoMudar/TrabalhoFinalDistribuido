@@ -9,6 +9,6 @@ echo ">>> [master] iniciando user-data em $(date)"
 
 # Valores injetados pelo Terraform:
 K3S_TOKEN_VALUE='${k3s_token}'
-MASTER_EIP='${master_eip}'
+MASTER_LB_DNS='${master_lb_dns}'
 REPO_URL='${repo_url}'
 REPO_BRANCH='${repo_branch}'
