@@ -1,0 +1,650 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Plataforma Distribuida de Venda de Ingressos</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  :root { --ink:#1a1a1a; --muted:#555; --accent:#0b5cad; --line:#d8dde3; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink); line-height: 1.5; font-size: 10.6pt;
+    max-width: 800px; margin: 0 auto; padding: 0 4px;
+  }
+  h1 { font-size: 19pt; line-height: 1.25; color: var(--accent); margin: 0 0 4px; }
+  h2 { font-size: 14pt; color: var(--accent); margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--line); page-break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 16px 0 6px; page-break-after: avoid; }
+  p, li { text-align: justify; }
+  code { background: #f3f5f7; padding: 1px 4px; border-radius: 3px; font-family: Consolas, "Courier New", monospace; font-size: 9.2pt; }
+  pre { background: #f6f8fa; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; font-size: 8.8pt; line-height: 1.4; page-break-inside: avoid; }
+  pre code { background: none; padding: 0; }
+  pre.mermaid { background: #fff; border: none; text-align: center; padding: 6px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 9.2pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: #eef3f8; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote { margin: 10px 0; padding: 6px 14px; border-left: 3px solid var(--accent); background: #f4f8fc; color: var(--muted); }
+  hr { border: none; border-top: 1px solid var(--line); margin: 18px 0; }
+  strong { color: #111; }
+  a { color: var(--accent); text-decoration: none; }
+  h2 { page-break-before: auto; }
+</style>
+</head>
+<body>
+<h1>Plataforma Distribuída de Venda de Ingressos: absorvendo picos de acesso com fila virtual, exclusão mútua distribuída e processamento desacoplado</h1>
+<p><strong>Disciplina:</strong> Sistemas Distribuídos
+<strong>Trabalho semestral</strong> — Aplicação completa sobre infraestrutura distribuída na AWS</p>
+<hr>
+<h2>Resumo</h2>
+<p>A venda de ingressos para eventos populares é um caso clássico de sistema sujeito a
+<strong>picos súbitos de carga</strong>: no instante da abertura das vendas, milhares de usuários
+disputam simultaneamente um número finito de assentos. Esse cenário expõe três
+desafios típicos de sistemas distribuídos: (i) garantir <strong>exclusão mútua</strong> para que o
+mesmo assento nunca seja vendido duas vezes; (ii) <strong>absorver a carga</strong> sem derrubar o
+sistema; e (iii) <strong>dar feedback</strong> ao usuário durante a espera. Este trabalho apresenta
+o projeto e a implementação de uma plataforma de venda de ingressos que ataca esses
+três problemas combinando uma <strong>fila virtual</strong> (AWS SQS) para amortecimento de carga
+(<em>backpressure</em>), <strong>reserva temporária de assento</strong> via locks com expiração automática
+(Redis com TTL) para exclusão mútua distribuída, e <strong>confirmação assíncrona por e-mail</strong>
+desacoplada do fluxo de compra (AWS SNS + AWS Lambda + SES). A persistência de dados de
+domínio usa <strong>MongoDB</strong>, e toda a aplicação (API REST, <em>workers</em> e <em>frontend</em>) é
+orquestrada em um <strong>cluster Kubernetes</strong>. O sistema foi validado de ponta a ponta em
+ambiente local (Docker Compose + LocalStack) e a infraestrutura de nuvem foi
+projetada para o <strong>AWS Academy Learner Lab</strong> com <em>cluster</em> k3s sobre EC2. Um teste de
+carga com k6 simulando a abertura de vendas demonstrou empiricamente a tese central:
+sob um pico de ~30 requisições/s, <strong>463 compras foram enfileiradas com 100% de
+respostas HTTP 202 e zero erros</strong>, com a profundidade da fila chegando a 418 itens e
+sendo drenada de forma estável. O sistema <strong>troca indisponibilidade por latência de
+processamento</strong> — ninguém recebe erro; todos entram na fila e são atendidos em um
+ritmo sustentável.</p>
+<p><strong>Palavras-chave:</strong> sistemas distribuídos; exclusão mútua; mensageria; <em>backpressure</em>;
+Kubernetes; serverless; observabilidade.</p>
+<hr>
+<h2>1. Introdução e problemática</h2>
+<p>Plataformas de venda de ingressos para eventos de grande apelo (shows, jogos,
+festivais) operam, na maior parte do tempo, sob carga moderada. Contudo, no momento
+da <strong>abertura das vendas</strong>, sofrem um pico de acesso de ordens de magnitude superior à
+média: um grande número de usuários chega praticamente ao mesmo tempo, todos
+competindo pelos mesmos recursos escassos — os assentos.</p>
+<p>Esse comportamento caracteriza um problema clássico de sistemas distribuídos sob alta
+contenção, com três exigências simultâneas:</p>
+<ol>
+<li><p><strong>Correção (exclusão mútua):</strong> um assento é um recurso de uso exclusivo. Sob
+concorrência massiva, é inaceitável vender o mesmo assento a dois compradores
+(<em>double selling</em>). A garantia de exclusão mútua precisa funcionar mesmo havendo
+<strong>múltiplas instâncias</strong> do serviço processando compras em paralelo — ou seja,
+exclusão mútua <em>distribuída</em>, e não apenas um <em>lock</em> em memória local.</p>
+</li>
+<li><p><strong>Disponibilidade sob carga:</strong> se cada requisição de compra bate diretamente no
+banco de dados, o pico satura a camada de persistência e o sistema inteiro
+degrada ou cai — justamente no momento de maior valor de negócio. É preciso
+<strong>amortecer</strong> o pico, processando as compras em um ritmo que a infraestrutura
+suporte.</p>
+</li>
+<li><p><strong>Experiência do usuário:</strong> durante a espera, o usuário não pode ficar diante de
+uma tela travada ou de um erro genérico. É necessário dar <strong>feedback</strong> — por
+exemplo, a posição em uma fila — para que a espera seja compreensível e o sistema
+pareça responsivo mesmo sob estresse.</p>
+</li>
+</ol>
+<p>A solução tradicional de &quot;escalar o banco&quot; é cara e tem limites. Este trabalho adota a
+abordagem, consagrada em arquiteturas de internet de larga escala, de <strong>desacoplar</strong> a
+recepção da requisição do seu processamento por meio de uma <strong>fila</strong>, combinada a um
+mecanismo de <strong>reserva temporária</strong> que resolve a exclusão mútua sem manter transações
+longas no banco. O restante deste artigo detalha a fundamentação, a arquitetura, as
+tecnologias escolhidas, a implementação por componente, a observabilidade e os
+resultados do teste de carga.</p>
+<hr>
+<h2>2. Fundamentação teórica</h2>
+<h3>2.1 Exclusão mútua distribuída</h3>
+<p>Exclusão mútua é a garantia de que, em qualquer instante, <strong>no máximo um</strong> processo
+detém acesso a uma seção crítica — aqui, o direito de reservar um assento específico.
+Em um sistema com um único processo, isso se resolve com primitivas locais (<em>mutex</em>,
+<em>semaphore</em>). Em um sistema <strong>distribuído</strong>, com várias instâncias de <em>workers</em> e de
+API rodando em pods distintos, é preciso um árbitro externo compartilhado.</p>
+<p>Neste projeto, o árbitro é o <strong>Redis</strong>, usando a operação atômica <code>SET chave valor NX EX</code>:</p>
+<ul>
+<li><strong><code>NX</code> (set if Not eXists)</strong> garante atomicidade: apenas o <strong>primeiro</strong> processo a
+executar a operação cria a chave e adquire o <em>lock</em>; todos os demais falham. Essa é a
+primitiva de exclusão mútua.</li>
+<li><strong><code>EX</code> (expiração em segundos)</strong> transforma o <em>lock</em> em uma <strong>reserva temporária com
+TTL</strong> (<em>Time To Live</em>). Se o detentor do <em>lock</em> falhar ou desistir, o <em>lock</em> expira
+sozinho, liberando o recurso — eliminando o risco de <em>deadlock</em> por travamento órfão,
+sem precisar de um processo de limpeza (<em>garbage collector</em>).</li>
+</ul>
+<p>A <strong>liberação segura</strong> do <em>lock</em> usa o padrão <em>compare-and-delete</em> via <em>script</em> Lua
+(executado atomicamente pelo Redis): só apaga o <em>lock</em> quem provar ser seu dono,
+comparando um <em>token</em> único gravado no momento da aquisição. Isso evita que um processo
+libere por engano um <em>lock</em> que já foi readquirido por outro após a expiração.</p>
+<h3>2.2 Desacoplamento e mensageria (filas e pub/sub)</h3>
+<p><strong>Desacoplamento</strong> é o princípio de fazer componentes se comunicarem de forma
+<strong>assíncrona</strong>, sem dependência temporal direta. Dois padrões de mensageria são usados:</p>
+<ul>
+<li><p><strong>Fila (ponto a ponto) — AWS SQS:</strong> o produtor (API) deposita mensagens; um ou mais
+consumidores (<em>workers</em>) as retiram. A fila funciona como um <strong>amortecedor</strong>
+(<em>buffer</em>): se a produção (pico de compras) supera o consumo, as mensagens se
+acumulam na fila em vez de sobrecarregar o consumidor. Esse mecanismo de
+<strong>controle de fluxo / <em>backpressure</em></strong> é o coração da estratégia anti-pico.</p>
+</li>
+<li><p><strong>Publicação/assinatura (pub/sub) — AWS SNS:</strong> o produtor publica um evento em um
+<strong>tópico</strong>; <em>N</em> assinantes reagem independentemente. Usamos SNS para emitir o evento
+&quot;pedido confirmado&quot; após o pagamento. O envio de e-mail é apenas <strong>um</strong> assinante —
+e o fato de o e-mail falhar ou demorar <strong>não afeta</strong> a confirmação da compra.</p>
+</li>
+</ul>
+<h3>2.3 <em>Backpressure</em> (contrapressão / amortecimento de carga)</h3>
+<p><em>Backpressure</em> é a técnica de <strong>limitar o ritmo</strong> com que um sistema aceita ou processa
+trabalho, mantendo-o dentro da capacidade sustentável. Aqui, os <em>workers</em> consomem a
+fila a uma taxa controlada (parâmetro <code>WORKER_RATE_MS</code>). Sob um pico, as compras se
+acumulam na SQS e são drenadas de forma estável — o sistema <strong>converte um pico de
+disponibilidade em latência de processamento</strong> distribuída no tempo, em vez de
+converter o pico em erros e indisponibilidade.</p>
+<h3>2.4 Computação <em>serverless</em> e orquestração de contêineres</h3>
+<ul>
+<li><p><strong>Serverless (AWS Lambda):</strong> funções efêmeras, executadas sob demanda em resposta a
+eventos, sem servidor gerenciado pela aplicação. Ideal para tarefas reativas e
+esporádicas — como enviar um e-mail quando um evento de confirmação chega.</p>
+</li>
+<li><p><strong>Orquestração (Kubernetes):</strong> automatiza implantação, escalonamento, verificação de
+saúde (<em>health probes</em>) e isolamento de contêineres. Permite declarar o estado
+desejado (réplicas, recursos, rede) e deixa o orquestrador convergir para ele,
+reiniciando o que falha e roteando tráfego apenas para instâncias saudáveis.</p>
+</li>
+</ul>
+<hr>
+<h2>3. Arquitetura proposta</h2>
+<h3>3.1 Visão geral</h3>
+<p>A aplicação separa nitidamente o <strong>caminho de recepção</strong> (rápido, que apenas enfileira)
+do <strong>caminho de processamento</strong> (controlado, que efetiva a reserva). O usuário nunca
+bate diretamente no banco durante o pico: ele recebe um <strong>ticket de fila</strong> e acompanha
+sua posição por <em>polling</em>.</p>
+<pre><code class="language-mermaid">flowchart LR
+    subgraph Cliente
+        WEB[Frontend React]
+    end
+    subgraph Cluster[&quot;Kubernetes (kind/minikube local · k3s/EC2 na AWS)&quot;]
+        API[API REST]
+        WORKER[Worker]
+    end
+    subgraph Mensageria
+        SQS[(SQS)]
+        SNS[(SNS)]
+    end
+    subgraph Dados
+        REDIS[(Redis&lt;br/&gt;locks + fila)]
+        MONGO[(MongoDB&lt;br/&gt;dados)]
+    end
+    LAMBDA[Lambda e-mail]
+
+    WEB --&gt;|REST /api| API
+    API --&gt;|enfileira| SQS
+    API --&gt; REDIS
+    API --&gt; MONGO
+    SQS --&gt;|long poll| WORKER
+    WORKER --&gt;|POST /reserve| API
+    WORKER --&gt; REDIS
+    API --&gt;|publica| SNS
+    SNS --&gt; LAMBDA
+</code></pre>
+<h3>3.2 Fluxo principal (caminho feliz)</h3>
+<ol>
+<li>O usuário escolhe um evento e um assento no <em>frontend</em>.</li>
+<li>A API recebe a <strong>intenção de compra</strong>, grava um <em>ticket</em> no Redis, envia uma
+mensagem à <strong>fila SQS</strong> e devolve imediatamente <code>202 { ticketId, position }</code>.</li>
+<li>O <em>frontend</em> faz <em>polling</em> da posição na fila (<code>GET /queue/:ticketId</code>).</li>
+<li>Um <em>worker</em> consome a mensagem da SQS (<em>long polling</em>) e delega a reserva à API,
+que tenta o <strong>lock no Redis</strong> (<code>SET NX EX 300</code>):<ul>
+<li><strong>Lock obtido:</strong> assento reservado por 5 minutos; cria-se o pedido <code>pending</code>.</li>
+<li><strong>Lock negado:</strong> assento já tomado; o <em>ticket</em> é marcado como <code>failed</code>.</li>
+</ul>
+</li>
+<li>O usuário &quot;paga&quot; (mock de pagamento) dentro do TTL.</li>
+<li>Pagamento confirmado: o pedido vira <code>paid</code>, o assento vira <code>sold</code> no MongoDB e a API
+<strong>publica o evento no SNS</strong>.</li>
+<li>A <strong>Lambda</strong> assina o SNS e envia o <strong>e-mail de confirmação</strong> via SES.</li>
+<li>Se o TTL expira sem pagamento, o <em>lock</em> cai sozinho e o assento volta a ficar livre.</li>
+</ol>
+<pre><code class="language-mermaid">sequenceDiagram
+    autonumber
+    actor U as Usuário
+    participant W as Frontend (React)
+    participant A as API (Fastify)
+    participant Q as Fila SQS
+    participant K as Worker
+    participant R as Redis (lock + TTL + fila)
+    participant M as MongoDB
+    participant S as SNS (order-confirmed)
+    participant L as Lambda (e-mail)
+
+    U-&gt;&gt;W: Escolhe evento e assento
+    W-&gt;&gt;A: POST .../purchase (intenção)
+    A-&gt;&gt;R: Grava ticket + INCR queue:seq
+    A-&gt;&gt;Q: Envia mensagem
+    A--&gt;&gt;W: 202 { ticketId, position }
+    loop Polling (GET /queue/:id)
+        W-&gt;&gt;A: Consulta estado/posição
+        A-&gt;&gt;R: Lê ticket + contadores
+    end
+    K-&gt;&gt;Q: Consome mensagem (long poll)
+    Note over K,A: O worker NÃO fala com o Mongo:&lt;br/&gt;delega a reserva à API (fonte única de verdade)
+    K-&gt;&gt;A: POST .../reserve
+    A-&gt;&gt;R: SET lock:seat NX EX 300
+    alt Lock obtido
+        A-&gt;&gt;M: Cria pedido (pending)
+        A--&gt;&gt;K: 201 (orderId, expiresAt)
+        K-&gt;&gt;R: Atualiza ticket = reserved
+        U-&gt;&gt;W: &quot;Paga&quot; (mock) dentro do TTL
+        W-&gt;&gt;A: POST .../pay
+        A-&gt;&gt;R: Confere lock + libera (Lua)
+        A-&gt;&gt;M: Pedido = paid, assento = sold
+        A-&gt;&gt;S: Publica &quot;pedido confirmado&quot;
+        S-&gt;&gt;L: Invoca Lambda
+        L--&gt;&gt;U: E-mail de confirmação (SES)
+    else Lock falhou (assento tomado)
+        A--&gt;&gt;K: 409
+        K-&gt;&gt;R: Atualiza ticket = failed
+    end
+    note over R: Se o TTL expira sem pagamento,&lt;br/&gt;o lock cai e o assento volta a ficar livre
+</code></pre>
+<h3>3.3 Decisão de projeto central: o <em>worker</em> não acessa o banco diretamente</h3>
+<p>Em vez de duplicar a lógica de <em>lock</em> e persistência no <em>worker</em>, decidimos que o
+<strong>worker chama o endpoint <code>reserve</code> da própria API</strong>. Assim, a API permanece a <strong>única
+fonte de verdade</strong> do domínio (regras de reserva, validação, escrita no Mongo) e o
+<em>worker</em> tem uma única responsabilidade: <strong>consumir a fila em ritmo controlado</strong>
+(<em>backpressure</em>). Isso reduz duplicação, simplifica o raciocínio sobre correção e
+mantém a exclusão mútua centralizada em um único trecho de código.</p>
+<h3>3.4 Topologia no Kubernetes e isolamento</h3>
+<p>A aplicação é dividida em <strong>dois namespaces</strong>, atendendo ao critério de isolamento de
+componentes:</p>
+<ul>
+<li><code>ingressos</code> — componentes <strong>sem estado</strong> e descartáveis (web, API ×2, worker);</li>
+<li><code>ingressos-data</code> — componentes <strong>com estado</strong> (MongoDB + PVC, Redis, LocalStack).</li>
+</ul>
+<p>A entrada externa é <strong>única</strong>, por um <strong>Ingress</strong> que aponta para o <em>frontend</em> (Nginx);
+o <em>backend</em> não fica exposto diretamente — o Nginx faz o <em>proxy</em> interno de <code>/api</code>.</p>
+<pre><code class="language-mermaid">flowchart TB
+  ing[Ingress] --&gt; web
+  subgraph ns_app[&quot;namespace: ingressos (aplicação, sem estado)&quot;]
+    web[web - Nginx + SPA]
+    api[api - Fastify x2]
+    worker[worker]
+    web --&gt;|/api| api
+    worker --&gt;|reserve| api
+  end
+  subgraph ns_data[&quot;namespace: ingressos-data (estado)&quot;]
+    mongo[(MongoDB + PVC)]
+    redis[(Redis)]
+    ls[LocalStack - SQS/SNS/SES]
+  end
+  api --&gt; mongo
+  api --&gt; redis
+  api --&gt;|SQS/SNS| ls
+  worker --&gt;|poll SQS| ls
+</code></pre>
+<hr>
+<h2>4. Tecnologias e justificativas</h2>
+<p>A tabela abaixo mapeia cada <strong>requisito de avaliação</strong> ao <strong>componente</strong> que o atende —
+serve de rastreabilidade entre a especificação e a implementação.</p>
+<table>
+<thead>
+<tr>
+<th>Requisito da avaliação</th>
+<th>Como atendemos</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cluster Kubernetes</td>
+<td>k3s sobre EC2 (AWS Academy) rodando API + workers + frontend</td>
+</tr>
+<tr>
+<td>Lambda</td>
+<td>Envio assíncrono de e-mail de confirmação</td>
+</tr>
+<tr>
+<td>SQS</td>
+<td>Fila virtual de compra (amortecimento do pico)</td>
+</tr>
+<tr>
+<td>SNS</td>
+<td>Evento &quot;pedido confirmado&quot; → invoca a Lambda</td>
+</tr>
+<tr>
+<td>Banco distribuído</td>
+<td>Redis (locks/TTL + fila) + MongoDB (dados de domínio)</td>
+</tr>
+<tr>
+<td>Front + back</td>
+<td>SPA React + API REST</td>
+</tr>
+<tr>
+<td>Observabilidade</td>
+<td>Prometheus + Grafana (local) / CloudWatch (nuvem)</td>
+</tr>
+<tr>
+<td>Isolamento de componentes</td>
+<td>Namespaces no K8s + filas desacoplando serviços</td>
+</tr>
+</tbody></table>
+<p>Principais escolhas tecnológicas e suas justificativas (registradas como ADRs em
+<code>docs/decisoes.md</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Decisão</th>
+<th>Escolha</th>
+<th>Justificativa</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Framework da API</td>
+<td><strong>Fastify</strong></td>
+<td>Mais performático que Express; validação/serialização por <em>schema</em> nativas — relevante sob carga, tema central do trabalho.</td>
+</tr>
+<tr>
+<td>Linguagem</td>
+<td><strong>TypeScript</strong></td>
+<td>Tipagem aumenta clareza (vale nota acadêmica) e previne erros nas integrações distribuídas.</td>
+</tr>
+<tr>
+<td>ODM do MongoDB</td>
+<td><strong>Mongoose</strong></td>
+<td><em>Schemas</em> explícitos e índices únicos declarativos.</td>
+</tr>
+<tr>
+<td>Cliente Redis</td>
+<td><strong>ioredis</strong></td>
+<td>Suporte direto a <code>SET NX EX</code> e a <em>scripts</em> Lua (liberação atômica do <em>lock</em>).</td>
+</tr>
+<tr>
+<td>Frontend</td>
+<td><strong>React + Vite</strong></td>
+<td>SPA leve, <em>dev server</em> rápido com <em>hot reload</em>.</td>
+</tr>
+<tr>
+<td>SDK AWS</td>
+<td><strong>AWS SDK v3</strong></td>
+<td>Modular; o mesmo cliente serve para dev (LocalStack) e produção (LabRole).</td>
+</tr>
+<tr>
+<td>Empacotamento da Lambda</td>
+<td><strong>CommonJS</strong>, SDK do <em>runtime</em></td>
+<td>Evita atritos de ESM no <em>runtime</em> <code>nodejs20.x</code> e gera artefato menor.</td>
+</tr>
+<tr>
+<td>Orquestração</td>
+<td><strong>Kubernetes (k3s sobre EC2)</strong></td>
+<td><em>Cluster</em> real, leve, que cabe no orçamento do Learner Lab (EKS costuma ser bloqueado/caro).</td>
+</tr>
+<tr>
+<td>Dev local</td>
+<td><strong>Docker Compose + LocalStack</strong></td>
+<td>Emula SQS/SNS/SES/Lambda sem custo; sobe tudo com um comando.</td>
+</tr>
+<tr>
+<td>Logs</td>
+<td><strong>pino</strong></td>
+<td>Logs estruturados (JSON), insumo direto para a observabilidade.</td>
+</tr>
+<tr>
+<td>Métricas</td>
+<td><strong>prom-client + Prometheus + Grafana</strong></td>
+<td>Padrão de fato; permite visualizar a fila amortecendo o pico.</td>
+</tr>
+<tr>
+<td>Teste de carga</td>
+<td><strong>k6</strong> (via Docker)</td>
+<td>Scriptável em JS, sem instalar nada; perfil de <strong>taxa de chegada</strong> modela um pico real.</td>
+</tr>
+</tbody></table>
+<h3>4.1 Ambiente de nuvem: AWS Academy Learner Lab</h3>
+<p>A entrega na nuvem foi projetada para o <strong>AWS Academy Learner Lab</strong>, que impõe
+restrições respeitadas pela infraestrutura como código (IaC):</p>
+<ul>
+<li><strong>IAM travado:</strong> não é possível criar <em>roles</em>/<em>policies</em>; reutiliza-se apenas a
+<em>role</em> pré-existente <strong><code>LabRole</code></strong> (o Terraform a <strong>referencia</strong>, nunca declara
+<code>aws_iam_role</code>/<code>aws_iam_policy</code>).</li>
+<li><strong>Credenciais temporárias</strong> (com <code>aws_session_token</code>) que expiram a cada ~3–4 h.</li>
+<li><strong>Orçamento limitado</strong> (~US$ 50–100): o ciclo é <strong>provisionar → demonstrar →
+<code>terraform destroy</code></strong> logo em seguida.</li>
+<li><strong>EKS bloqueado/caro</strong> → uso de <strong>k3s sobre EC2</strong> (Kubernetes real, leve).</li>
+<li><strong>ECR pode faltar</strong> → imagens via Docker Hub ou <code>docker save</code>/<code>load</code> nas EC2.</li>
+</ul>
+<pre><code class="language-mermaid">flowchart TB
+  subgraph LL[&quot;AWS Academy Learner Lab (us-east-1)&quot;]
+    subgraph EC2[&quot;EC2 + k3s (cluster Kubernetes)&quot;]
+      pods[web · api · worker]
+    end
+    sqs[(SQS real)]
+    sns[(SNS real)]
+    lambda[Lambda real]
+    ses[SES]
+  end
+  pods --&gt;|usa LabRole| sqs
+  pods --&gt; sns
+  sns --&gt; lambda
+  lambda --&gt; ses
+</code></pre>
+<hr>
+<h2>5. Implementação por componente</h2>
+<h3>5.1 Backend (API REST — Fastify)</h3>
+<p>A API é a fonte única de verdade do domínio. Modela três entidades no MongoDB
+(eventos, assentos, pedidos) e expõe os seguintes <em>endpoints</em>:</p>
+<table>
+<thead>
+<tr>
+<th>Método</th>
+<th>Rota</th>
+<th>Descrição</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GET</td>
+<td><code>/health</code></td>
+<td><em>Liveness/readiness</em> (probe do K8s)</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/events</code></td>
+<td>Lista eventos</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/events/:id</code></td>
+<td>Detalhe do evento</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/events/:id/seats</code></td>
+<td>Assentos com disponibilidade (<code>available</code>/<code>reserved</code>/<code>sold</code>)</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/events/:id/seats/:seatId/reserve</code></td>
+<td>Reserva temporária (lock Redis + TTL)</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/orders/:orderId/pay</code></td>
+<td>Mock de pagamento → confirma se o lock vale + publica no SNS</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/orders/:orderId</code></td>
+<td>Status do pedido</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/events/:id/seats/:seatId/purchase</code></td>
+<td><strong>Fila virtual</strong>: enfileira na SQS, devolve <code>ticketId</code> + posição</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/queue/:ticketId</code></td>
+<td>Posição/estado do <em>ticket</em> na fila (<em>polling</em>)</td>
+</tr>
+</tbody></table>
+<p>O <strong>estado do assento</strong> é modelado com economia: <code>available</code>/<code>sold</code> vivem no Mongo,
+enquanto o estado <strong>efêmero</strong> <code>reserved</code> vive <strong>apenas</strong> no Redis como um <em>lock</em> com
+TTL. Não há <em>job</em> de limpeza: se o pagamento não vem, o <em>lock</em> expira e o assento se
+liberta sozinho. A disponibilidade exibida ao usuário é a composição
+<code>sold</code> (Mongo) <strong>ou</strong> <code>reserved</code> (lock ativo) <strong>ou</strong> <code>available</code>.</p>
+<h3>5.2 Mensageria e <em>worker</em></h3>
+<p>A fila virtual usa <strong>AWS SQS</strong>. No <code>POST .../purchase</code>, a API grava o <em>ticket</em> no Redis,
+envia a mensagem à SQS e devolve <code>202</code> com a posição. A <strong>posição na fila</strong> é calculada
+em O(1) a partir de dois contadores no Redis (<code>queue:seq</code> incrementado ao enfileirar e
+<code>queue:processed</code> incrementado ao processar): <code>posição = seq − processed − 1</code> — uma
+aproximação FIFO suficiente para o <em>feedback</em>.</p>
+<p>O <strong>worker</strong> é um processo Node separado que faz <em>long polling</em> na SQS (até 20 s) e,
+para cada mensagem: marca <code>processing</code>, chama <code>reserve</code> na API, grava o resultado
+(<code>reserved</code>/<code>failed</code>) no <em>ticket</em>, incrementa <code>queue:processed</code>, apaga a mensagem e
+<strong>aguarda <code>WORKER_RATE_MS</code></strong> (padrão 500 ms) antes da próxima — implementando o
+<em>backpressure</em>. O <em>loop</em> é tolerante a falhas transitórias (registra, espera e tenta de
+novo), o que tornou o <em>worker</em> resiliente a reinícios do LocalStack.</p>
+<h3>5.3 <em>Serverless</em> (Lambda de e-mail)</h3>
+<p>Após o pagamento, a API publica <code>{orderId, eventId, seatId, userEmail}</code> no tópico SNS
+<code>order-confirmed</code>. Uma <strong>Lambda</strong> (<code>nodejs20.x</code>, empacotada como CommonJS) assina esse
+tópico e envia o e-mail de confirmação via <strong>SES</strong>. O desacoplamento é total: uma falha
+no envio de e-mail <strong>não derruba</strong> o pagamento. Em dev, as mensagens ficam
+inspecionáveis em <code>GET /_aws/ses</code> do LocalStack; em produção, usa-se o SES real.</p>
+<h3>5.4 Frontend (React + Vite)</h3>
+<p>A SPA é uma <strong>máquina de estados</strong> linear — <code>events → seats → queue → checkout → done</code> —
+em que cada passo corresponde a uma etapa da arquitetura, o que facilita a explicação na
+apresentação. O caminho de compra adotado é o <strong>assíncrono</strong> (<code>purchase</code> + <em>polling</em> da
+fila), espelhando a arquitetura real. As telas são: (1) lista de eventos; (2) mapa de
+assentos (verde=livre, laranja=reservado, cinza=vendido); (3) fila com posição; (4)
+<em>checkout</em> com contagem regressiva do TTL; (5) confirmação. A comunicação usa um
+<em>proxy</em> <code>/api</code>, de modo que o <em>frontend</em> não precisa conhecer a URL real da API (vale
+tanto para o <em>dev server</em> do Vite quanto para o Ingress no K8s).</p>
+<h3>5.5 Containerização e Kubernetes</h3>
+<p>Cada serviço tem seu <strong>Dockerfile</strong>. O <em>frontend</em> em produção é o <em>build</em> estático do
+Vite servido por <strong>Nginx</strong> (o <em>dev server</em> do Vite não é para produção). Os manifests
+do K8s (<code>infra/k8s/</code>) declaram: 2 namespaces, <em>configmaps</em>, MongoDB com <strong>PVC</strong> (estado
+persistente), Redis, LocalStack, <em>deployments</em> de api (×2), worker e web, e um Ingress
+único. Há <strong>probes</strong> de <em>readiness/liveness</em> em todos os serviços, para que o
+orquestrador só roteie tráfego a pods prontos e reinicie os travados. Os <strong>mesmos
+manifests</strong> servem para o cluster local (kind/minikube) e para o k3s/EC2 na nuvem —
+muda apenas o contexto do <code>kubectl</code>.</p>
+<hr>
+<h2>6. Observabilidade e resultados do teste de carga</h2>
+<h3>6.1 Observabilidade</h3>
+<p>A API e o <em>worker</em> expõem <code>/metrics</code> no formato Prometheus (via <code>prom-client</code>). Além
+das métricas padrão do Node, há <strong>métricas de domínio</strong> que contam a história
+distribuída:</p>
+<ul>
+<li><code>queue_depth</code> — itens aguardando na fila virtual (<strong>prova visual do <em>backpressure</em></strong>);</li>
+<li><code>queue_enqueued_total</code> vs. <code>worker_messages_processed_total</code> — entrada × saída;</li>
+<li><code>reservations_total{result}</code> e <code>payments_total{result}</code> — sucesso/conflito;</li>
+<li><code>http_request_duration_seconds</code> — latência por rota.</li>
+</ul>
+<p>O <code>queue_depth</code> é um <em>gauge</em> cujo método <code>collect()</code> lê os contadores do Redis no
+momento do <em>scrape</em>, garantindo valor sempre fresco. O <strong>Prometheus</strong> coleta a cada 5 s
+e o <strong>Grafana</strong> sobe com <em>datasource</em> e <em>dashboard</em> <strong>provisionados</strong> (versionados no
+repositório), sem cliques manuais na demonstração.</p>
+<pre><code class="language-mermaid">flowchart LR
+  api[API /metrics] --&gt; prom[Prometheus]
+  worker[Worker /metrics] --&gt; prom
+  prom --&gt; graf[Grafana dashboard &#39;Ingressos&#39;]
+</code></pre>
+<h3>6.2 Teste de carga</h3>
+<p>Para validar empiricamente a tese central, usamos o <strong>k6</strong> com um perfil
+<code>ramping-arrival-rate</code> (taxa de <strong>chegada</strong> controlada, que modela a abertura de vendas
+independentemente da latência do servidor — exatamente como um pico real se comporta),
+batendo no <em>endpoint</em> da <strong>fila</strong> (<code>POST .../purchase</code>).</p>
+<p><strong>Resultado medido</strong> (pico de ~30 req/s por 15 s):</p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th>Valor</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Compras enfileiradas</td>
+<td><strong>463</strong></td>
+</tr>
+<tr>
+<td>Respostas HTTP 202</td>
+<td><strong>100%</strong></td>
+</tr>
+<tr>
+<td>Erros</td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td>Latência p95</td>
+<td><strong>≈ 17 ms</strong></td>
+</tr>
+<tr>
+<td>Pico de <code>queue_depth</code></td>
+<td><strong>418</strong></td>
+</tr>
+<tr>
+<td>Vazão de drenagem</td>
+<td><strong>~2/s</strong> (= <code>WORKER_RATE_MS = 500 ms</code>)</td>
+</tr>
+</tbody></table>
+<h3>6.3 Interpretação</h3>
+<p>Os resultados confirmam o comportamento projetado: sob o pico, <strong>ninguém recebeu erro</strong>
+— todas as compras entraram na fila (HTTP 202) com latência de resposta baixíssima
+(~17 ms), enquanto a <code>queue_depth</code> subiu a 418 e foi drenada de forma estável no ritmo
+do <em>worker</em>. Ao mesmo tempo, à medida que os assentos esgotavam, o <em>worker</em> registrava
+<code>reserved</code> e <code>failed</code>, confirmando a <strong>exclusão mútua</strong>: por assento, apenas a primeira
+compra vence. Em outras palavras, o sistema <strong>trocou indisponibilidade por latência de
+processamento</strong>, distribuindo o pico no tempo. Aumentar a vazão é trivial: basta
+<strong>aumentar as réplicas do <em>worker</em></strong> ou <strong>reduzir <code>WORKER_RATE_MS</code></strong> — a arquitetura
+permite escalar a drenagem sem tocar na lógica de correção.</p>
+<hr>
+<h2>7. Conclusão e trabalhos futuros</h2>
+<p>Este trabalho projetou e implementou uma plataforma distribuída de venda de ingressos
+que resolve, de forma integrada, os três desafios do cenário de pico: <strong>exclusão mútua
+distribuída</strong> (locks com TTL no Redis, liberados por <em>compare-and-delete</em> atômico),
+<strong>absorção de carga</strong> (fila virtual SQS com <em>backpressure</em> nos <em>workers</em>) e <strong>feedback
+ao usuário</strong> (posição na fila por <em>polling</em>), com <strong>confirmação assíncrona</strong> desacoplada
+(SNS → Lambda → SES). A aplicação cobre todos os componentes exigidos — cluster
+Kubernetes, Lambda, mensageria (SQS + SNS), banco distribuído (Redis + MongoDB) e
+<em>frontend</em> + <em>backend</em> funcionais — e foi validada de ponta a ponta localmente, com um
+teste de carga que <strong>comprova empiricamente</strong> a tese de que a fila absorve o pico sem
+gerar erros.</p>
+<p>As principais lições reforçam conceitos de sistemas distribuídos: o valor do
+<strong>desacoplamento</strong> para a resiliência (uma falha de e-mail não derruba uma compra), o
+poder de uma primitiva <strong>atômica simples</strong> (<code>SET NX EX</code>) para resolver exclusão mútua e
+evitar <em>deadlocks</em> via expiração, e o ganho de tratar disponibilidade e correção como
+problemas separados, resolvidos por mecanismos distintos.</p>
+<p><strong>Trabalhos futuros</strong> incluem: (i) escalar os <em>workers</em> horizontalmente e medir o ganho
+de vazão; (ii) substituir o <em>mock</em> de pagamento por uma integração real e idempotente;
+(iii) adicionar uma <em>Dead Letter Queue</em> (DLQ) na SQS para mensagens problemáticas; (iv)
+portar Prometheus/Grafana para dentro do cluster e integrar com o CloudWatch na nuvem;
+(v) introduzir <em>autoscaling</em> (HPA) na API com base na latência; e (vi) evoluir a
+posição da fila de uma aproximação por contadores para uma garantia FIFO estrita quando
+o cenário exigir.</p>
+<hr>
+<h2>Apêndice A — Como reproduzir</h2>
+<pre><code class="language-bash"># 1. Dependências dos workspaces
+npm install
+
+# 2. Subir a stack (LocalStack + Redis + Mongo + API + worker + web + Prometheus + Grafana)
+docker compose up --build -d
+
+# 3. Implantar a Lambda de e-mail no LocalStack (assina o SNS)
+./scripts/deploy-lambda.ps1     # Windows
+./scripts/deploy-lambda.sh      # Linux/macOS
+
+# 4. Teste de carga (simula o pico)
+./scripts/loadtest.ps1 -Peak 100 -Hold 30s
+</code></pre>
+<p>Acessos: <strong>web</strong> <a href="http://localhost:5173">http://localhost:5173</a> · <strong>API</strong> <a href="http://localhost:8080/health">http://localhost:8080/health</a> ·
+<strong>Grafana</strong> <a href="http://localhost:3000">http://localhost:3000</a> (dashboard &quot;Ingressos&quot;) · <strong>Prometheus</strong>
+<a href="http://localhost:9090">http://localhost:9090</a> · <strong>e-mails (SES)</strong> <a href="http://localhost:4566/_aws/ses">http://localhost:4566/_aws/ses</a></p>
+<h2>Apêndice B — Registro de decisões (ADRs)</h2>
+<p>Todas as decisões de arquitetura estão registradas em <code>docs/decisoes.md</code> (ADR-000 a
+ADR-008), e os diagramas-fonte em Mermaid em <code>docs/diagramas/arquitetura.md</code>. Esses
+documentos constituem a metodologia detalhada deste trabalho.</p>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose',
+    flowchart: { useMaxWidth: true }, sequence: { useMaxWidth: true } });
+</script>
+</body>
+</html>

@@ -31,6 +31,11 @@ echo ">>> [master] iniciando user-data em $(date)"
 # Troque por um segredo seu; NÃO comite o valor real no repositório.
 K3S_TOKEN_VALUE='trabalho-distribuidos-2026'
 
+# Região AWS e Elastic IP (endpoint PÚBLICO estável do master, p/ SSH/navegador).
+# Confira o valor real no painel EC2 -> Elastic IPs.
+AWS_REGION='us-east-1'
+ELASTIC_IP='54.235.246.44'
+
 # Repositório com o código (as EC2 sobem "vazias", precisam clonar o projeto).
 REPO_URL='https://github.com/JoaoMudar/TrabalhoFinalDistribuido.git'
 REPO_BRANCH='main'
@@ -40,6 +45,37 @@ REPO_DIR='/opt/ingressos'
 K8S_DIR="${REPO_DIR}/infra/k8s"
 
 export DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# 0. Associa o Elastic IP a ESTA instância (endpoint público estável do master)
+# ---------------------------------------------------------------------------
+# Uma EC2 nova NÃO herda o Elastic IP sozinha — alguém precisa "associar". Aqui a
+# própria instância se associa no boot, usando a LabRole. Pré-requisito: a EC2
+# master tem a LabRole no Instance Profile (Launch Template -> IAM instance profile).
+#
+# IMPORTANTE: o EIP é só p/ acesso EXTERNO (SSH, abrir o frontend, mostrar ao
+# professor). As WORKERS continuam fazendo join pelo IP PRIVADO do master — de
+# dentro da VPC o tráfego pro próprio EIP sofre hairpinning e o join falha.
+echo ">>> [master] instalando awscli e associando Elastic IP ${ELASTIC_IP}..."
+apt-get update -y
+apt-get install -y awscli
+
+# instance-id desta EC2 via IMDSv2 (metadata)
+IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
+  http://169.254.169.254/latest/meta-data/instance-id)
+
+# descobre o allocation-id (eipalloc-...) a partir do IP elástico e associa.
+ALLOC_ID=$(aws ec2 describe-addresses --region "${AWS_REGION}" \
+  --public-ips "${ELASTIC_IP}" \
+  --query 'Addresses[0].AllocationId' --output text)
+
+aws ec2 associate-address --region "${AWS_REGION}" \
+  --instance-id "${INSTANCE_ID}" \
+  --allocation-id "${ALLOC_ID}" \
+  --allow-reassociation
+echo ">>> [master] Elastic IP ${ELASTIC_IP} associado (alloc ${ALLOC_ID})."
 
 # ---------------------------------------------------------------------------
 # 1. Instala o k3s SERVER com token estático

@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Apresentacao - Venda de Ingressos</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  :root { --ink:#1a1a1a; --muted:#555; --accent:#0b5cad; --line:#d8dde3; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink); line-height: 1.5; font-size: 10.6pt;
+    max-width: 800px; margin: 0 auto; padding: 0 4px;
+  }
+  h1 { font-size: 19pt; line-height: 1.25; color: var(--accent); margin: 0 0 4px; }
+  h2 { font-size: 14pt; color: var(--accent); margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--line); page-break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 16px 0 6px; page-break-after: avoid; }
+  p, li { text-align: justify; }
+  code { background: #f3f5f7; padding: 1px 4px; border-radius: 3px; font-family: Consolas, "Courier New", monospace; font-size: 9.2pt; }
+  pre { background: #f6f8fa; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; font-size: 8.8pt; line-height: 1.4; page-break-inside: avoid; }
+  pre code { background: none; padding: 0; }
+  pre.mermaid { background: #fff; border: none; text-align: center; padding: 6px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 9.2pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: #eef3f8; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote { margin: 10px 0; padding: 6px 14px; border-left: 3px solid var(--accent); background: #f4f8fc; color: var(--muted); }
+  hr { border: none; border-top: 1px solid var(--line); margin: 18px 0; }
+  strong { color: #111; }
+  a { color: var(--accent); text-decoration: none; }
+  h2 { page-break-before: auto; }
+</style>
+</head>
+<body>
+<h1>Roteiro de Apresentação — Plataforma Distribuída de Venda de Ingressos</h1>
+<blockquote>
+<p>Slides em Markdown. Cada bloco separado por <code>---</code> é um slide. Tempo-alvo: ~12–15 min</p>
+<ul>
+<li>demo ao vivo. Sugestão de divisão de falas entre os integrantes ao final.</li>
+</ul>
+</blockquote>
+<hr>
+<h2>Slide 1 — Capa</h2>
+<p><strong>Plataforma Distribuída de Venda de Ingressos</strong>
+Absorvendo picos de acesso com fila virtual, exclusão mútua distribuída e
+processamento desacoplado</p>
+<p>Disciplina de Sistemas Distribuídos — Trabalho semestral
+Integrantes: _____________________</p>
+<hr>
+<h2>Slide 2 — A problemática</h2>
+<ul>
+<li>Venda de ingressos para eventos populares → <strong>pico súbito</strong> na abertura das vendas.</li>
+<li>Milhares de usuários disputando <strong>assentos finitos</strong> ao mesmo tempo.</li>
+<li>Três desafios distribuídos simultâneos:<ol>
+<li><strong>Não vender o mesmo assento duas vezes</strong> (exclusão mútua).</li>
+<li><strong>Não cair</strong> sob a carga (disponibilidade).</li>
+<li><strong>Dar feedback</strong> ao usuário durante a espera.</li>
+</ol>
+</li>
+</ul>
+<blockquote>
+<p>&quot;Escalar o banco&quot; é caro e tem limite. A saída é <strong>desacoplar</strong> receber de processar.</p>
+</blockquote>
+<hr>
+<h2>Slide 3 — A ideia central (em uma frase)</h2>
+<blockquote>
+<p><strong>Trocar indisponibilidade por latência de processamento.</strong></p>
+</blockquote>
+<p>Em vez de o usuário bater direto no banco e receber erro, ele <strong>entra numa fila</strong>,
+recebe uma <strong>posição</strong>, e é atendido num <strong>ritmo sustentável</strong>.</p>
+<hr>
+<h2>Slide 4 — Solução em 4 peças</h2>
+<ol>
+<li><strong>Fila virtual (SQS):</strong> a compra entra numa fila; o usuário recebe uma posição.
+<em>Workers</em> consomem em ritmo controlado → <strong>backpressure</strong>.</li>
+<li><strong>Reserva temporária (Redis + TTL):</strong> o assento é travado com <code>SET NX EX 300</code>.
+Sem pagamento, o lock <strong>expira sozinho</strong> → exclusão mútua sem deadlock.</li>
+<li><strong>Confirmação assíncrona (SNS + Lambda + SES):</strong> pagamento publica no SNS;
+a Lambda envia o e-mail. Falha de e-mail <strong>não derruba</strong> a compra.</li>
+<li><strong>Persistência (MongoDB):</strong> eventos, assentos, pedidos.</li>
+</ol>
+<hr>
+<h2>Slide 5 — Arquitetura (visão de componentes)</h2>
+<pre><code class="language-mermaid">flowchart LR
+    WEB[Frontend React] --&gt;|REST /api| API[API REST]
+    API --&gt;|enfileira| SQS[(SQS)]
+    API --&gt; REDIS[(Redis&lt;br/&gt;locks + fila)]
+    API --&gt; MONGO[(MongoDB)]
+    SQS --&gt;|long poll| WORKER[Worker]
+    WORKER --&gt;|POST /reserve| API
+    API --&gt;|publica| SNS[(SNS)]
+    SNS --&gt; LAMBDA[Lambda e-mail]
+</code></pre>
+<p><strong>Decisão-chave:</strong> o <em>worker</em> <strong>não</strong> fala com o Mongo — delega a reserva à API
+(fonte única de verdade). O <em>worker</em> só faz <strong>uma coisa</strong>: drenar a fila no ritmo certo.</p>
+<hr>
+<h2>Slide 6 — Fluxo do caminho feliz</h2>
+<ol>
+<li>Escolhe assento → <code>POST /purchase</code> → <strong>202 + posição na fila</strong></li>
+<li>Frontend faz <em>polling</em> da posição (<code>GET /queue/:id</code>)</li>
+<li>Worker consome a fila → API tenta o <strong>lock no Redis</strong><ul>
+<li>Obteve → <code>reserved</code> (5 min)</li>
+<li>Falhou → <code>failed</code> (assento tomado)</li>
+</ul>
+</li>
+<li>Paga dentro do TTL → pedido <code>paid</code>, assento <code>sold</code></li>
+<li>API <strong>publica no SNS</strong> → Lambda envia <strong>e-mail</strong></li>
+<li>TTL expira sem pagamento → assento <strong>volta a ficar livre</strong> sozinho</li>
+</ol>
+<hr>
+<h2>Slide 7 — Exclusão mútua distribuída (o coração)</h2>
+<pre><code>SET lock:seat:{id} {token} EX 300 NX
+</code></pre>
+<ul>
+<li><strong><code>NX</code></strong> → só <strong>um</strong> processo adquire o lock (atomicidade = exclusão mútua).</li>
+<li><strong><code>EX 300</code></strong> → reserva temporária; expira sozinha (sem deadlock, sem job de limpeza).</li>
+<li><strong>Liberação</strong> via <em>script Lua</em> (compare-and-delete): só o dono do <code>token</code> libera.</li>
+</ul>
+<p>Funciona com <strong>N instâncias</strong> de API/worker → exclusão mútua <strong>distribuída</strong>, não local.</p>
+<hr>
+<h2>Slide 8 — Componentes obrigatórios ✓</h2>
+<table>
+<thead>
+<tr>
+<th>Requisito</th>
+<th>Como atendemos</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cluster Kubernetes</td>
+<td>k3s sobre EC2 (AWS Academy)</td>
+</tr>
+<tr>
+<td>Lambda</td>
+<td>E-mail de confirmação</td>
+</tr>
+<tr>
+<td>SQS</td>
+<td>Fila virtual de compra</td>
+</tr>
+<tr>
+<td>SNS</td>
+<td>Evento &quot;pedido confirmado&quot; → Lambda</td>
+</tr>
+<tr>
+<td>Banco distribuído</td>
+<td>Redis (locks/TTL) + MongoDB (dados)</td>
+</tr>
+<tr>
+<td>Front + back</td>
+<td>SPA React + API REST</td>
+</tr>
+<tr>
+<td>Observabilidade</td>
+<td>Prometheus + Grafana / CloudWatch</td>
+</tr>
+<tr>
+<td>Isolamento</td>
+<td>Namespaces no K8s + filas</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Slide 9 — Kubernetes: isolamento por namespaces</h2>
+<pre><code class="language-mermaid">flowchart TB
+  ing[Ingress] --&gt; web
+  subgraph ns_app[&quot;ingressos (sem estado)&quot;]
+    web --&gt; api
+    worker --&gt; api
+  end
+  subgraph ns_data[&quot;ingressos-data (estado)&quot;]
+    mongo[(MongoDB+PVC)]
+    redis[(Redis)]
+    ls[LocalStack]
+  end
+  api --&gt; mongo
+  api --&gt; redis
+</code></pre>
+<ul>
+<li>Entrada <strong>única</strong> pelo Ingress (backend não exposto).</li>
+<li>Estado isolado do que é descartável. Mesmos manifests: local <strong>e</strong> nuvem.</li>
+</ul>
+<hr>
+<h2>Slide 10 — Observabilidade</h2>
+<ul>
+<li>API e worker expõem <code>/metrics</code> (Prometheus via <code>prom-client</code>).</li>
+<li>Métricas de domínio que contam a história:<ul>
+<li><strong><code>queue_depth</code></strong> → a fila enchendo e drenando (prova do backpressure)</li>
+<li><code>reservations_total</code> / <code>payments_total</code> → sucesso vs. conflito</li>
+<li>latência HTTP por rota</li>
+</ul>
+</li>
+<li><strong>Grafana</strong> sobe com dashboard <strong>já provisionado</strong> (zero clique na demo).</li>
+</ul>
+<hr>
+<h2>Slide 11 — Teste de carga (a prova)</h2>
+<p>Pico de <strong>~30 req/s por 15s</strong> com k6 batendo na fila:</p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th>Valor</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Compras enfileiradas</td>
+<td><strong>463</strong></td>
+</tr>
+<tr>
+<td>HTTP 202</td>
+<td><strong>100%</strong></td>
+</tr>
+<tr>
+<td>Erros</td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td>p95</td>
+<td><strong>≈ 17 ms</strong></td>
+</tr>
+<tr>
+<td>Pico de <code>queue_depth</code></td>
+<td><strong>418</strong> → drenado a ~2/s</td>
+</tr>
+</tbody></table>
+<blockquote>
+<p><strong>Ninguém recebeu erro.</strong> Todos entraram na fila e foram atendidos no ritmo do worker.</p>
+</blockquote>
+<hr>
+<h2>Slide 12 — Demonstração ao vivo</h2>
+<ol>
+<li>Subir a stack: <code>docker compose up -d</code> + <code>deploy-lambda</code>.</li>
+<li>Comprar um ingresso pelo frontend (evento → assento → fila → checkout → confirmação).</li>
+<li>Mostrar o e-mail em <code>http://localhost:4566/_aws/ses</code>.</li>
+<li>Disparar o teste de carga e ver a <strong><code>queue_depth</code></strong> subir e drenar no <strong>Grafana</strong>.</li>
+<li>(Se houver Learner Lab ativo) mostrar os recursos reais na AWS.</li>
+</ol>
+<hr>
+<h2>Slide 13 — Conclusão</h2>
+<ul>
+<li><strong>Desacoplamento</strong> = resiliência (e-mail cai, compra não).</li>
+<li>Uma <strong>primitiva atômica simples</strong> (<code>SET NX EX</code>) resolve exclusão mútua e deadlock.</li>
+<li>Tratar <strong>disponibilidade</strong> e <strong>correção</strong> como problemas separados.</li>
+<li><strong>Trabalhos futuros:</strong> escalar workers, DLQ, pagamento real idempotente, HPA,
+FIFO estrito, CloudWatch.</li>
+</ul>
+<p><strong>Obrigado!</strong> Perguntas?</p>
+<hr>
+<h2>Divisão de falas (sugestão)</h2>
+<table>
+<thead>
+<tr>
+<th>Bloco</th>
+<th>Slides</th>
+<th>Responsável</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Problemática + ideia central</td>
+<td>2–4</td>
+<td>__________</td>
+</tr>
+<tr>
+<td>Arquitetura + fluxo</td>
+<td>5–7</td>
+<td>__________</td>
+</tr>
+<tr>
+<td>Componentes + K8s</td>
+<td>8–9</td>
+<td>__________</td>
+</tr>
+<tr>
+<td>Observabilidade + carga</td>
+<td>10–11</td>
+<td>__________</td>
+</tr>
+<tr>
+<td>Demo ao vivo</td>
+<td>12</td>
+<td>__________</td>
+</tr>
+<tr>
+<td>Conclusão + perguntas</td>
+<td>13</td>
+<td>todos</td>
+</tr>
+</tbody></table>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose',
+    flowchart: { useMaxWidth: true }, sequence: { useMaxWidth: true } });
+</script>
+</body>
+</html>

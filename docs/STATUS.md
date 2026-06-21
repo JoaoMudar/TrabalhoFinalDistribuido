@@ -4,9 +4,11 @@
 > primeiro ao recomeçar. Resumo do que já roda, como subir, e o que falta fazer.
 > Mantenha atualizado ao fim de cada fase (é barato e evita reconstruir contexto).
 >
-> **Última atualização:** 2026-06-17 — Fases 1–4, **7 (observabilidade) e 8
-> (teste de carga) feitas**; Fase 5 (K8s) com código pronto (falta cluster vivo).
-> Ambiente de nuvem definido: **AWS Academy Learner Lab + k3s/EC2** (ver ADR-005).
+> **Última atualização:** 2026-06-21 — **Fase 9 (artigo + diagramas + apresentação)
+> concluída**. Artigo científico completo em `docs/artigo/` (PDF + HTML + .txt) e
+> roteiro de slides. Fases 1–4, 7 e 8 feitas; Fase 5 (K8s) com código pronto
+> (falta cluster vivo); Fase 6 (AWS) projetada (ADR-005). Ambiente de nuvem:
+> **AWS Academy Learner Lab + k3s/EC2**.
 
 ---
 
@@ -96,9 +98,20 @@ As próximas fases **mudam de natureza** (não são mais "código que roda local
 - **Como repetir:** `./scripts/loadtest.ps1 -Peak 100 -Hold 30s` e ver no Grafana.
 - **Custo:** zero (local).
 
-### Fase 9 — Artigo + diagramas + apresentação
-- **O quê:** escrever `docs/artigo/` a partir dos ADRs; diagramas mermaid em `docs/diagramas/`; slides.
-- **Sem dependências externas.** Pode ser feito a qualquer momento.
+### Fase 9 — Artigo + diagramas + apresentação ✅ FEITA
+- **Feito:** artigo científico completo em `docs/artigo/artigo.md` (7 seções: introdução/
+  problemática, fundamentação, arquitetura, tecnologias, implementação por componente,
+  observabilidade + resultados do teste de carga, conclusão) destilado dos ADRs-000 a 008.
+  Diagramas mermaid reaproveitados de `docs/diagramas/arquitetura.md`. Roteiro de slides em
+  `docs/artigo/apresentacao.md` (13 slides + divisão de falas + roteiro da demo).
+- **Entregáveis gerados:** `artigo.pdf` e `apresentacao.pdf` (impressos via Edge headless,
+  com os diagramas mermaid renderizados), além de `artigo.html`/`apresentacao.html`
+  autocontidos e `artigo.txt` (fallback em texto puro).
+- **Como regerar o PDF:** instalar `marked` num dir temporário, converter md→html tratando
+  blocos ```mermaid``` como `<pre class="mermaid">`, e imprimir com
+  `msedge --headless=new --print-to-pdf --virtual-time-budget=15000`. Edge é o conversor
+  (não há pandoc/wkhtmltopdf na máquina).
+- **Custo:** zero (local).
 
 ---
 

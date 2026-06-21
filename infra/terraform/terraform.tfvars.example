@@ -1,0 +1,13 @@
+# Copie para terraform.tfvars e ajuste. terraform.tfvars NÃO deve ser commitado.
+# Os defaults em variables.tf já servem para o Learner Lab; sobrescreva só o que precisar.
+
+aws_region   = "us-east-1"
+key_name     = "vockey"            # key pair padrão do AWS Academy
+worker_count = 2
+
+# Troque pelo seu repo se for outro:
+# repo_url    = "https://github.com/JoaoMudar/TrabalhoFinalDistribuido.git"
+# repo_branch = "main"
+
+# Restrinja o SSH ao seu IP se quiser (ex.: "203.0.113.10/32"):
+# ssh_ingress_cidr = "0.0.0.0/0"
