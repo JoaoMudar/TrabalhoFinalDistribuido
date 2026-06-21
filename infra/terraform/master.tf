@@ -1,44 +1,37 @@
 # ============================================================================
-# MASTER — Launch Template + Auto Scaling Group (1 nó fixo: min=max=desired=1).
-# Vive num ASG só para padronizar o provisionamento (user-data no template) e
-# dar self-healing do NÓ. Tem um IP privado FIXO (local.master_private_ip): as
-# workers joinam por ele. O NLB (ver lb.tf) é o endpoint público (frontend na 80
-# e kubectl externo na 6443) e entra no --tls-san do k3s.
+# MASTER — uma única EC2 (aws_instance), NÃO um Auto Scaling Group.
 #
-# CAVEAT: o ASG recria o NÓ se ele morrer, mas NÃO preserva o estado do cluster
-# (o k3s guarda etcd/sqlite localmente). Uma substituição sobe um cluster novo
-# que re-builda imagens e re-aplica os manifests. Para a demo é aceitável; HA
-# real do control plane fica como trabalho futuro.
+# Por que não ASG? O master é um PET, não cattle: ele guarda o estado do k3s
+# (etcd/sqlite) localmente. Um ASG só recriaria um nó VAZIO se o atual morresse,
+# subindo um cluster novo — não é self-healing de verdade. Além disso, ASG +
+# IP privado fixo é PROIBIDO pela AWS ("Auto Scaling does not support Private IP
+# addresses"), e o IP privado fixo é justamente o que faz o join das workers
+# funcionar de forma confiável.
+#
+# Com aws_instance temos: IP privado FIXO (local.master_private_ip), conhecido já
+# no plan, que é injetado nas workers; e registramos o nó nos target groups do
+# NLB manualmente (aws_lb_target_group_attachment). O NLB (ver lb.tf) segue como
+# endpoint público (frontend na 80, kubectl externo na 6443) e entra no --tls-san.
 # ============================================================================
 
-resource "aws_launch_template" "master" {
-  name_prefix   = "ingressos-master-"
-  image_id      = data.aws_ami.ubuntu.id
+resource "aws_instance" "master" {
+  ami           = data.aws_ami.ubuntu.id
   instance_type = var.master_instance_type
   key_name      = var.key_name
 
-  iam_instance_profile {
-    name = var.instance_profile
-  }
+  iam_instance_profile = var.instance_profile
 
-  # Interface de rede com IP privado FIXO (ver local.master_private_ip em
-  # data.tf). Quando o IP é fixado aqui, a SG precisa vir DENTRO da interface
-  # (não dá pra usar vpc_security_group_ids no nível do template ao mesmo tempo).
-  network_interfaces {
-    device_index                = 0
-    subnet_id                   = local.master_subnet_id
-    private_ip_address          = local.master_private_ip
-    security_groups             = [aws_security_group.cluster.id]
-    associate_public_ip_address = true
-  }
+  # IP privado FIXO dentro da subnet escolhida (ver local.master_private_ip em
+  # data.tf). As workers joinam por ele; o IP é conhecido no plan.
+  subnet_id                   = local.master_subnet_id
+  private_ip                  = local.master_private_ip
+  vpc_security_group_ids      = [aws_security_group.cluster.id]
+  associate_public_ip_address = true
 
   # Disco maior: build das 3 imagens docker consome espaço.
-  block_device_mappings {
-    device_name = "/dev/sda1"
-    ebs {
-      volume_size = 30
-      volume_type = "gp3"
-    }
+  root_block_device {
+    volume_size = 30
+    volume_type = "gp3"
   }
 
   # User-data = bloco de config (templated) + corpo estático (bash puro).
@@ -54,49 +47,29 @@ resource "aws_launch_template" "master" {
     file("${path.module}/userdata/master-body.sh"),
   ]))
 
-  tag_specifications {
-    resource_type = "instance"
-    tags = {
-      Name = "ingressos-master"
-      Role = "k3s-server"
-    }
+  # Mudou o user-data (ex.: novo token/branch) → recria a instância (sobe cluster
+  # novo). Sem isto, o Terraform ignoraria a mudança de user-data numa instância
+  # já criada. Equivale ao instance_refresh que o ASG fazia antes.
+  user_data_replace_on_change = true
+
+  tags = {
+    Name = "ingressos-master"
+    Role = "k3s-server"
   }
 }
 
-resource "aws_autoscaling_group" "master" {
-  name             = "ingressos-master-asg"
-  desired_capacity = 1
-  min_size         = 1
-  max_size         = 1
-  # Uma subnet só: precisa casar com a subnet do IP privado fixo do master.
-  vpc_zone_identifier = [local.master_subnet_id]
+# --- Registro do master nos target groups do NLB ----------------------------
+# O ASG fazia isso via target_group_arns; com aws_instance registramos à mão.
+# 6443 = k3s API (kubectl externo + join das workers via NLB, se necessário).
+resource "aws_lb_target_group_attachment" "master_api" {
+  target_group_arn = aws_lb_target_group.api.arn
+  target_id        = aws_instance.master.id
+  port             = 6443
+}
 
-  # Master entra nos DOIS target groups: 6443 (k3s API) e 80 (app/Traefik).
-  target_group_arns = [
-    aws_lb_target_group.api.arn,
-    aws_lb_target_group.app.arn,
-  ]
-
-  launch_template {
-    id      = aws_launch_template.master.id
-    version = "$Latest"
-  }
-
-  # Todo apply que mudar o launch template (ex.: user-data) recicla o nó sozinho.
-  # min_healthy_percentage = 0 é OBRIGATÓRIO aqui: como é 1 nó só, o refresh
-  # precisa poder derrubar a única instância pra subir a nova (com qualquer valor
-  # >0 o refresh travaria por não conseguir manter "saudável" o mínimo exigido).
-  instance_refresh {
-    strategy = "Rolling"
-    preferences {
-      min_healthy_percentage = 0
-      instance_warmup        = 120
-    }
-  }
-
-  tag {
-    key                 = "Name"
-    value               = "ingressos-master"
-    propagate_at_launch = true
-  }
+# 80 = app/Traefik (ServiceLB do k3s escuta em todo nó, inclusive o master).
+resource "aws_lb_target_group_attachment" "master_app" {
+  target_group_arn = aws_lb_target_group.app.arn
+  target_id        = aws_instance.master.id
+  port             = 80
 }

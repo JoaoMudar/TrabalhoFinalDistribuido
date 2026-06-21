@@ -66,8 +66,8 @@ resource "aws_autoscaling_group" "workers" {
     }
   }
 
-  # Garante que o master (ASG) já exista antes de subir as workers.
-  depends_on = [aws_autoscaling_group.master]
+  # Garante que o master já exista antes de subir as workers.
+  depends_on = [aws_instance.master]
 
   tag {
     key                 = "Name"

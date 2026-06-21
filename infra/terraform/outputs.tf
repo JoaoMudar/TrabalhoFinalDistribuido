@@ -1,7 +1,18 @@
 # ============================================================================
 # Saídas úteis após o apply (acesso e verificação).
-# Sem EIP/instância fixa: o endpoint estável agora é o DNS do NLB.
+# Endpoint público estável = DNS do NLB. O master agora é uma aws_instance com
+# IP fixo, então também expomos os IPs dele diretamente (útil pra SSH/debug).
 # ============================================================================
+
+output "master_public_ip" {
+  description = "IP público do master (SSH e debug)."
+  value       = aws_instance.master.public_ip
+}
+
+output "master_private_ip" {
+  description = "IP privado FIXO do master (usado no join das workers)."
+  value       = aws_instance.master.private_ip
+}
 
 output "lb_dns_name" {
   description = "DNS do NLB — endpoint estável do cluster (frontend e k3s API)."
@@ -23,8 +34,7 @@ output "check_nodes" {
   value       = "sudo k3s kubectl get nodes -o wide"
 }
 
-# O master vive num ASG, então não há IP fixo. Use a CLI para descobri-lo:
-output "find_master_ip" {
-  description = "Descobre o IP público do nó master (que está no ASG)."
-  value       = "aws ec2 describe-instances --filters 'Name=tag:Role,Values=k3s-server' 'Name=instance-state-name,Values=running' --query 'Reservations[].Instances[].PublicIpAddress' --output text"
+output "ssh_master" {
+  description = "Comando pronto p/ SSH no master."
+  value       = "ssh -i ${var.key_name}.pem ubuntu@${aws_instance.master.public_ip}"
 }
