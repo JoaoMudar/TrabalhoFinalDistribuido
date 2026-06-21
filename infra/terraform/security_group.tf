@@ -20,6 +20,19 @@ resource "aws_security_group" "cluster" {
     self        = true
   }
 
+  # --- k3s API (6443) acessível via NLB ---
+  # O health check do NLB NÃO vem de uma instância do SG (logo a regra self=true
+  # não o cobre); ele parte das ENIs do NLB, que ficam nas subnets da VPC. Sem
+  # esta regra o target group da 6443 fica unhealthy e as workers não joinam.
+  # O CIDR da VPC cobre tanto o health check quanto as workers chegando pelo NLB.
+  ingress {
+    description = "k3s API (6443) - health check do NLB + join das workers"
+    from_port   = 6443
+    to_port     = 6443
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.default.cidr_block]
+  }
+
   # --- SSH para você administrar/depurar ---
   ingress {
     description = "SSH"
