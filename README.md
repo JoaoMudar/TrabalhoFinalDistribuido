@@ -180,8 +180,8 @@ absorve o pico. Script em [`tests/load/purchase-burst.js`](tests/load/purchase-b
 | 2 | Mensageria (SQS + worker + SNS no LocalStack) | ✅ |
 | 3 | Lambda de e-mail assinando o SNS | ✅ |
 | 4 | Frontend (evento, assentos, fila, confirmação) | ✅ |
-| 5 | Containerização + manifests K8s (kind/minikube) | 🚧 código pronto; falta rodar em cluster |
-| 6 | AWS/Terraform no **AWS Academy Learner Lab** (k3s/EC2, SQS, SNS, Lambda reais) | ⬜ |
+| 5 | Containerização + manifests K8s (kind/minikube) | ✅ |
+| 6 | AWS/Terraform no **AWS Academy Learner Lab** (k3s/EC2, SQS, SNS, Lambda reais) | ✅ |
 | 7 | Observabilidade (logs, métricas, Prometheus/Grafana) | ✅ |
 | 8 | Teste de carga (k6) | ✅ |
-| 9 | Artigo + diagramas + apresentação | ⬜ |
+| 9 | Artigo + diagramas + apresentação | ✅ |
