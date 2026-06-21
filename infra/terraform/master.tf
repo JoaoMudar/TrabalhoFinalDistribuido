@@ -1,8 +1,9 @@
 # ============================================================================
 # MASTER — Launch Template + Auto Scaling Group (1 nó fixo: min=max=desired=1).
 # Vive num ASG só para padronizar o provisionamento (user-data no template) e
-# dar self-healing do NÓ. O endpoint estável NÃO é mais um Elastic IP, e sim o
-# DNS do NLB (ver lb.tf): o --tls-san do k3s e o join das workers usam esse DNS.
+# dar self-healing do NÓ. Tem um IP privado FIXO (local.master_private_ip): as
+# workers joinam por ele. O NLB (ver lb.tf) é o endpoint público (frontend na 80
+# e kubectl externo na 6443) e entra no --tls-san do k3s.
 #
 # CAVEAT: o ASG recria o NÓ se ele morrer, mas NÃO preserva o estado do cluster
 # (o k3s guarda etcd/sqlite localmente). Uma substituição sobe um cluster novo
@@ -20,7 +21,16 @@ resource "aws_launch_template" "master" {
     name = var.instance_profile
   }
 
-  vpc_security_group_ids = [aws_security_group.cluster.id]
+  # Interface de rede com IP privado FIXO (ver local.master_private_ip em
+  # data.tf). Quando o IP é fixado aqui, a SG precisa vir DENTRO da interface
+  # (não dá pra usar vpc_security_group_ids no nível do template ao mesmo tempo).
+  network_interfaces {
+    device_index                = 0
+    subnet_id                   = local.master_subnet_id
+    private_ip_address          = local.master_private_ip
+    security_groups             = [aws_security_group.cluster.id]
+    associate_public_ip_address = true
+  }
 
   # Disco maior: build das 3 imagens docker consome espaço.
   block_device_mappings {
@@ -54,11 +64,12 @@ resource "aws_launch_template" "master" {
 }
 
 resource "aws_autoscaling_group" "master" {
-  name                = "ingressos-master-asg"
-  desired_capacity    = 1
-  min_size            = 1
-  max_size            = 1
-  vpc_zone_identifier = data.aws_subnets.default.ids
+  name             = "ingressos-master-asg"
+  desired_capacity = 1
+  min_size         = 1
+  max_size         = 1
+  # Uma subnet só: precisa casar com a subnet do IP privado fixo do master.
+  vpc_zone_identifier = [local.master_subnet_id]
 
   # Master entra nos DOIS target groups: 6443 (k3s API) e 80 (app/Traefik).
   target_group_arns = [

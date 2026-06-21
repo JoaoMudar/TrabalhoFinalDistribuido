@@ -24,10 +24,11 @@ resource "aws_launch_template" "worker" {
     }
   }
 
-  # DNS do NLB (endpoint estável do k3s API) injetado no template do agent.
+  # IP privado FIXO do master injetado no template do agent (join confiável,
+  # dentro da VPC, sem depender do health check do NLB).
   user_data = base64encode(templatefile("${path.module}/userdata/worker.tpl", {
-    k3s_token     = var.k3s_token
-    master_lb_dns = aws_lb.main.dns_name
+    k3s_token         = var.k3s_token
+    master_private_ip = local.master_private_ip
   }))
 
   tag_specifications {

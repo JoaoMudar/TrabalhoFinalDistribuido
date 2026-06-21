@@ -32,6 +32,21 @@ locals {
     toset(data.aws_ec2_instance_type_offerings.master.locations),
     toset(data.aws_ec2_instance_type_offerings.worker.locations),
   ))
+
+  # Subnet onde o master vai morar (a primeira utilizável).
+  master_subnet_id = data.aws_subnets.default.ids[0]
+
+  # IP privado FIXO do master. Como o master vive num ASG, a AWS atribuiria um
+  # IP dinâmico (desconhecido no plan) — o que quebrava o join das workers.
+  # Pinando um IP conhecido dentro do CIDR da subnet, o Terraform pode injetá-lo
+  # nas workers e o join volta a ser pelo IP privado (o caminho que funciona).
+  # cidrhost(..., 10) = 11º host da subnet; longe dos IPs reservados da AWS.
+  master_private_ip = cidrhost(data.aws_subnet.master.cidr_block, 10)
+}
+
+# CIDR da subnet do master — necessário para calcular o IP privado fixo acima.
+data "aws_subnet" "master" {
+  id = local.master_subnet_id
 }
 
 # Subnets da VPC default APENAS nas AZs utilizáveis — os ASGs (master e
