@@ -82,6 +82,18 @@ resource "aws_autoscaling_group" "master" {
     version = "$Latest"
   }
 
+  # Todo apply que mudar o launch template (ex.: user-data) recicla o nó sozinho.
+  # min_healthy_percentage = 0 é OBRIGATÓRIO aqui: como é 1 nó só, o refresh
+  # precisa poder derrubar a única instância pra subir a nova (com qualquer valor
+  # >0 o refresh travaria por não conseguir manter "saudável" o mínimo exigido).
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 0
+      instance_warmup        = 120
+    }
+  }
+
   tag {
     key                 = "Name"
     value               = "ingressos-master"

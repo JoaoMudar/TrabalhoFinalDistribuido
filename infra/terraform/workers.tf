@@ -55,6 +55,17 @@ resource "aws_autoscaling_group" "workers" {
     version = "$Latest"
   }
 
+  # Todo apply que mudar o launch template (ex.: user-data) recicla as workers
+  # sozinho, uma de cada vez. min_healthy_percentage = 50 com 2 nós mantém pelo
+  # menos 1 worker no ar enquanto a outra é substituída; warmup dá tempo do join.
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 50
+      instance_warmup        = 120
+    }
+  }
+
   # Garante que o master (ASG) já exista antes de subir as workers.
   depends_on = [aws_autoscaling_group.master]
 
