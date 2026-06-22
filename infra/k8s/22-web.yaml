@@ -18,6 +18,11 @@ spec:
       labels:
         app: web
     spec:
+      # Imagem local (ingressos/web) existe só no containerd do master — fixa
+      # o pod no control-plane para evitar ImagePullBackOff nas workers.
+      # Ver explicação completa em 20-api.yaml.
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
       containers:
         - name: web
           image: ingressos/web:latest

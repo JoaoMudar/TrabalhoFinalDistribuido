@@ -47,6 +47,15 @@ resource "aws_autoscaling_group" "workers" {
   max_size            = var.worker_count + 2
   vpc_zone_identifier = data.aws_subnets.default.ids
 
+  # NÃO bloquear o apply esperando as workers ficarem "healthy".
+  # Por padrão o Terraform espera (até 10 min) as instâncias atingirem a
+  # capacidade desejada e passarem no health check do target group (porta 80),
+  # o que só acontece depois de cada worker bootar, instalar o k3s agent, joinar
+  # o master e subir o ServiceLB/Traefik — daí os ~8 min. Com "0", o apply
+  # retorna assim que o ASG é criado e as workers entram no cluster em segundo
+  # plano (conferir depois com `kubectl get nodes`).
+  wait_for_capacity_timeout = "0"
+
   # Workers entram no target group da app (80) p/ o NLB distribuir HTTP nelas.
   target_group_arns = [aws_lb_target_group.app.arn]
 

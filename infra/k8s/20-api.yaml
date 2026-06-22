@@ -19,6 +19,14 @@ spec:
       labels:
         app: api
     spec:
+      # As imagens locais (ingressos/*) são buildadas e importadas SÓ no
+      # containerd do master (ver master-body.sh). As workers não têm essas
+      # imagens nem docker, então um pod agendado nelas dá ImagePullBackOff.
+      # Fixamos os pods de imagem local no nó control-plane (master), onde as
+      # imagens existem. (Alternativa "de verdade": publicar no Docker Hub e
+      # deixar as workers darem pull — aí este nodeSelector sai.)
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
       containers:
         - name: api
           image: ingressos/api:latest

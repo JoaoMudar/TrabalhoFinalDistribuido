@@ -21,6 +21,11 @@ spec:
       labels:
         app: worker
     spec:
+      # Imagem local (ingressos/worker) existe só no containerd do master —
+      # fixa o pod no control-plane para evitar ImagePullBackOff nas workers.
+      # Ver explicação completa em 20-api.yaml.
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
       containers:
         - name: worker
           image: ingressos/worker:latest
