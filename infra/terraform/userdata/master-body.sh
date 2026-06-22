@@ -79,5 +79,25 @@ done
 echo ">>> [master] aplicando manifests do k8s..."
 k3s kubectl apply -k "${K8S_DIR}"
 
+# --------------------------------------------------------------------------
+# 6b. Fase 6 (AWS real): a app deve falar com SQS/SNS/Lambda REAIS, não com o
+# LocalStack interno. ESVAZIAMOS AWS_ENDPOINT_URL no ConfigMap; com a var vazia,
+# o código trata como "não definido" e o SDK usa a AWS de verdade autenticando
+# com as credenciais da LabRole obtidas via IMDS (ver metadata_options no
+# Terraform). Depois reiniciamos api/worker para recarregarem o ConfigMap.
+# (Feito por kubectl em vez de overlay kustomize porque a base e' ancestral do
+# overlay e o kustomize acusaria ciclo.)
+#
+# Por que --type=merge esvaziando em vez de --type=json removendo a chave: o
+# JSON6902 'remove' era REJEITADO pelo servidor ("The request is invalid"),
+# deixava a var apontando pro LocalStack e a compra dava 500/CrashLoop. O merge
+# patch com string vazia e' aceito e produz o mesmo efeito (config.ts/index.ts
+# tratam "" como nao-definido).
+# --------------------------------------------------------------------------
+echo ">>> [master] apontando a app para a AWS real (esvaziando AWS_ENDPOINT_URL)..."
+k3s kubectl -n ingressos patch configmap ingressos-config \
+  --type=merge -p '{"data":{"AWS_ENDPOINT_URL":""}}'
+k3s kubectl -n ingressos rollout restart deployment/api deployment/worker
+
 echo ">>> [master] CONCLUIDO em $(date)"
 echo ">>> Verifique com: sudo k3s kubectl get pods -A"

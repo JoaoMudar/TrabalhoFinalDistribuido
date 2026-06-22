@@ -63,3 +63,47 @@ variable "ssh_ingress_cidr" {
   type        = string
   default     = "0.0.0.0/0"
 }
+
+# ============================================================================
+# Mensageria real (messaging.tf) — SQS + SNS + Lambda de e-mail.
+# ============================================================================
+
+variable "lab_role_name" {
+  description = "Nome da role pré-existente do Learner Lab usada como role de execução da Lambda (NÃO criamos IAM)."
+  type        = string
+  default     = "LabRole"
+}
+
+variable "queue_name" {
+  description = "Nome da fila SQS de compra (deve bater com QUEUE_NAME da aplicação)."
+  type        = string
+  default     = "ticket-purchase-queue"
+}
+
+variable "topic_name" {
+  description = "Nome do tópico SNS de pedido confirmado (deve bater com TOPIC_NAME da aplicação)."
+  type        = string
+  default     = "order-confirmed"
+}
+
+variable "email_topic_name" {
+  description = "Nome do tópico SNS de notificação por e-mail (a Lambda publica aqui)."
+  type        = string
+  default     = "order-emails"
+}
+
+variable "lambda_name" {
+  description = "Nome da função Lambda de confirmação por e-mail."
+  type        = string
+  default     = "email-confirmation"
+}
+
+variable "notify_email" {
+  description = "E-mail (fixo) que recebe as confirmações de pedido. Precisa CONFIRMAR a inscrição SNS uma vez (link enviado no apply)."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.notify_email))
+    error_message = "Defina notify_email com um endereço de e-mail válido (ex.: em terraform.tfvars)."
+  }
+}

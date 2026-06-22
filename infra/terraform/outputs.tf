@@ -38,3 +38,30 @@ output "ssh_master" {
   description = "Comando pronto p/ SSH no master."
   value       = "ssh -i ${var.key_name}.pem ubuntu@${aws_instance.master.public_ip}"
 }
+
+# --- Mensageria real (messaging.tf) -----------------------------------------
+
+output "sqs_queue_url" {
+  description = "URL da fila SQS de compra."
+  value       = aws_sqs_queue.purchase.url
+}
+
+output "sns_order_confirmed_arn" {
+  description = "ARN do tópico SNS de pedido confirmado (a API publica aqui)."
+  value       = aws_sns_topic.order_confirmed.arn
+}
+
+output "sns_order_emails_arn" {
+  description = "ARN do tópico SNS de notificação por e-mail (a Lambda publica aqui)."
+  value       = aws_sns_topic.order_emails.arn
+}
+
+output "lambda_name" {
+  description = "Nome da Lambda de confirmação por e-mail."
+  value       = aws_lambda_function.email.function_name
+}
+
+output "email_subscription_reminder" {
+  description = "LEMBRETE: confirme a inscrição de e-mail antes da demo."
+  value       = "Abra a caixa de ${var.notify_email} e clique em 'Confirm subscription' (assunto: AWS Notification - Subscription Confirmation). Sem isso o e-mail NÃO chega."
+}

@@ -24,6 +24,14 @@ resource "aws_launch_template" "worker" {
     }
   }
 
+  # Mesma razão do master: pods alcançam o IMDS (credenciais da LabRole) só com
+  # hop limit 2. Útil caso algum pod que use AWS venha a rodar nas workers.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "optional"
+    http_put_response_hop_limit = 2
+  }
+
   # IP privado FIXO do master injetado no template do agent (join confiável,
   # dentro da VPC, sem depender do health check do NLB).
   user_data = base64encode(templatefile("${path.module}/userdata/worker.tpl", {

@@ -4,11 +4,11 @@
 > primeiro ao recomeçar. Resumo do que já roda, como subir, e o que falta fazer.
 > Mantenha atualizado ao fim de cada fase (é barato e evita reconstruir contexto).
 >
-> **Última atualização:** 2026-06-21 — **Fase 9 (artigo + diagramas + apresentação)
-> concluída**. Artigo científico completo em `docs/artigo/` (PDF + HTML + .txt) e
-> roteiro de slides. Fases 1–4, 7 e 8 feitas; Fase 5 (K8s) com código pronto
-> (falta cluster vivo); Fase 6 (AWS) projetada (ADR-005). Ambiente de nuvem:
-> **AWS Academy Learner Lab + k3s/EC2**.
+> **Última atualização:** 2026-06-21 — **Fase 6: e-mail real na AWS corrigido**
+> (ADR-009). Terraform agora provisiona SQS+SNS+Lambda reais e aponta a app para a
+> AWS (antes só LocalStack interno, sem Lambda → e-mail não saía). Fase 9 (artigo +
+> diagramas + apresentação) concluída. Fases 1–4, 7 e 8 feitas; Fase 5 (K8s) com
+> código pronto (falta cluster vivo). Ambiente de nuvem: **AWS Academy Learner Lab + k3s/EC2**.
 
 ---
 
@@ -79,6 +79,29 @@ As próximas fases **mudam de natureza** (não são mais "código que roda local
 - **Ambiente DEFINIDO:** AWS Academy **Learner Lab** (não é conta AWS comum). Para mostrar ao professor.
 - **Cluster:** **k3s instalado sobre EC2** (não EKS — EKS costuma ser bloqueado/caro no Learner Lab).
 - **O quê:** `infra/terraform/` provisionando EC2 (+ k3s), SQS, SNS, Lambda; deploy real.
+- **✅ E-mail real corrigido (2026-06-21, ADR-009):** antes o e-mail NÃO saía na nuvem
+  (a app falava com LocalStack interno, onde a Lambda não roda). Agora `infra/terraform/
+  messaging.tf` provisiona **SQS + SNS `order-confirmed` + Lambda + SNS `order-emails`**
+  (assinatura de e-mail), a Lambda usa a **LabRole**, e o user-data do master **esvazia
+  `AWS_ENDPOINT_URL`** do ConfigMap → app usa AWS real (credenciais via IMDS; por isso
+  `metadata_options` hop limit 2 no master/worker). Caminho: SNS→Lambda→SNS-email.
+- **✅ Deploy validado num cluster vivo (2026-06-22):** primeira subida real na AWS
+  (NLB `ingressos-nlb-...`, 3 nós k3s, pods de pé). Fluxo de ponta a ponta confirmado:
+  frontend carrega, API responde, worker consome a SQS real
+  (`queueUrl: https://sqs.us-east-1.amazonaws.com/.../ticket-purchase-queue`).
+- **🐛 Bug corrigido na subida (2026-06-22):** o passo do user-data que apontava a app
+  para a AWS real usava `kubectl patch --type=json` com `op:remove` em
+  `/data/AWS_ENDPOINT_URL` — o **servidor REJEITAVA** o patch ("The request is invalid"),
+  e o `|| true` mascarava a falha. Resultado: ConfigMap continuava apontando pro
+  LocalStack interno → API dava **500** na compra (`ECONNREFUSED 127.0.0.1:4566`) e o
+  worker entrava em **CrashLoop** (`ENOTFOUND localstack`). **Correção aplicada** em
+  `master-body.sh`: trocado por `--type=merge -p '{"data":{"AWS_ENDPOINT_URL":""}}'`
+  (string vazia = não-definido no código). Conserto manual em runtime foi o mesmo merge
+  patch + `rollout restart deployment/api deployment/worker`.
+  - **Antes do apply:** `npm run build --workspace services/lambda-email` e definir
+    `notify_email` no `terraform.tfvars`.
+  - **Depois do apply (CRÍTICO):** confirmar a inscrição de e-mail clicando no link que a
+    AWS manda para `notify_email` (output `email_subscription_reminder`), senão nada chega.
 - **🔒 Restrições do Learner Lab (obrigatório respeitar):**
   - **Não criar IAM** — usar só a role pré-existente `LabRole` (referenciar, nunca declarar `aws_iam_role`/`aws_iam_policy`).
   - **Credenciais temporárias** (com `aws_session_token`) que expiram em ~3–4h → copiar do painel "AWS Details" a cada sessão; nunca commitar.

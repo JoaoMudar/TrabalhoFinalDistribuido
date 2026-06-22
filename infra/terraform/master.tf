@@ -34,6 +34,16 @@ resource "aws_instance" "master" {
     volume_type = "gp3"
   }
 
+  # IMDS acessível de DENTRO dos pods. Os pods api/worker (fixados neste nó via
+  # nodeSelector) buscam as credenciais da LabRole no IMDS (169.254.169.254)
+  # para falar com SQS/SNS reais. O default hop limit = 1 bloqueia containers
+  # (o pacote atravessa o netns do pod = +1 salto). 2 deixa o pod alcançar.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "optional"
+    http_put_response_hop_limit = 2
+  }
+
   # User-data = bloco de config (templated) + corpo estático (bash puro).
   # O DNS do NLB entra como --tls-san; é conhecido após o NLB ser criado, e o
   # Terraform garante essa ordem por causa da referência abaixo.

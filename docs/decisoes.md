@@ -367,3 +367,40 @@ Aumentar a vazão é só aumentar réplicas do worker ou reduzir `WORKER_RATE_MS
 ### Consequências
 - Gráfico de `queue_depth` (Grafana) é a evidência visual para a apresentação.
 - Parametrizável (`PEAK`, `RAMP`, `HOLD`) para gerar diferentes cenários no artigo.
+
+---
+
+## ADR-009 — E-mail real na AWS (mensageria da Fase 6 via Terraform)
+
+**Data:** 2026-06-21
+**Status:** Aceito
+
+### Contexto
+Na nuvem (Learner Lab) o e-mail de confirmação **nunca era enviado**. Causa: o
+Terraform só provisionava o cluster k3s; a aplicação dentro do cluster continuava
+falando com um **LocalStack interno** (`AWS_ENDPOINT_URL` apontando para o Service
+`localstack`). E o LocalStack **não executa Lambda** nesse modo (precisa do socket
+do Docker, indisponível no pod). Resultado: o pagamento publicava num SNS emulado
+sem consumidor — sem Lambda, sem e-mail. Isso furava um requisito obrigatório da
+avaliação (Lambda + SNS + e-mail funcionando na nuvem).
+
+### Decisões
+
+| Decisão | Escolha | Justificativa |
+|---|---|---|
+| Provisionar mensageria real | **SQS + SNS + Lambda via Terraform** (`messaging.tf`) | Recursos AWS de verdade, descartáveis com `terraform destroy`. |
+| Role da Lambda | **`LabRole` referenciada** (`data aws_iam_role`) | Learner Lab não deixa criar IAM; usamos a role pré-existente. |
+| Caminho do e-mail | **SNS → Lambda → SNS-email** | A Lambda assina `order-confirmed`, formata e publica em `order-emails`, que tem assinatura de e-mail. Mantém a Lambda no fluxo (requisito) e **evita o sandbox do SES** (que exigiria verificar cada destinatário). |
+| Destinatário | **endereço fixo** (`var.notify_email`) | Assinaturas de e-mail do SNS são estáticas; para a demo, um endereço fixo recebe todas as confirmações (com os dados do pedido no corpo). |
+| Credenciais da app no cluster | **LabRole via IMDS** | Os pods api/worker (no master) pegam as credenciais do instance profile pelo IMDS. Exigiu `metadata_options { http_put_response_hop_limit = 2 }` — o default (1) bloqueia containers (o pacote atravessa o netns do pod = +1 salto). |
+| Apontar a app para a AWS real | **remover `AWS_ENDPOINT_URL` do ConfigMap** | Sem a var, o SDK usa a AWS real. Feito por `kubectl patch` no user-data do master (overlay kustomize daria ciclo: a base é ancestral do overlay). Default do código também passou a ser vazio (api/worker). |
+| Empacotar a Lambda | **`archive_file` do `dist/`** | O AWS SDK v3 já vem no runtime `nodejs20.x`; o zip leva só o handler compilado. Rodar `npm run build --workspace services/lambda-email` antes do apply. |
+
+### Consequência operacional (não esquecer na demo)
+Após o `apply`, a AWS envia um e-mail de **confirmação de inscrição** para
+`notify_email`. É preciso **clicar no link uma vez**; sem isso a Lambda publica
+mas nada chega à caixa. O output `email_subscription_reminder` lembra disso.
+
+### Dev local não muda
+O handler ramifica por `NOTIFY_TOPIC_ARN`: com a var (AWS) publica no SNS; sem ela
+(docker-compose/LocalStack) continua enviando via **SES**, visível no SES viewer.

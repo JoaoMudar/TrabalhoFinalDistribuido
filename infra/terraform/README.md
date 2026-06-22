@@ -2,12 +2,34 @@
 
 Provisiona o cluster k3s na AWS de forma reproduzível e descartável:
 
-- **1 EC2 master** (k3s server) com **Elastic IP** grudado automaticamente.
+- **1 EC2 master** (k3s server) com IP privado fixo; endpoint público via NLB.
 - **Auto Scaling Group de workers** (k3s agent) que fazem **join sozinhas** pelo IP privado do master.
 - **Security Group** liberando as portas internas do cluster entre os nós e SSH/HTTP pra fora.
-- Master clona o repo, builda as 3 imagens (api/worker/web), importa no containerd e aplica os manifests.
+- **Mensageria real** (`messaging.tf`): fila **SQS**, tópico **SNS** `order-confirmed`,
+  **Lambda** de e-mail e tópico **SNS** `order-emails` com assinatura de e-mail.
+- Master clona o repo, builda as 3 imagens (api/worker/web), importa no containerd, aplica
+  os manifests e **remove `AWS_ENDPOINT_URL`** do ConfigMap → a app passa a usar a AWS real.
 
 Tudo usando a **LabRole** (não cria IAM), em `us-east-1`.
+
+## Fluxo do e-mail de confirmação (Fase 3 na nuvem)
+
+```
+pagamento → API publica no SNS "order-confirmed"
+          → SNS invoca a Lambda "email-confirmation"
+          → Lambda formata e publica no SNS "order-emails"
+          → assinatura de e-mail entrega na caixa de notify_email
+```
+
+A app (api/worker) autentica na AWS com as credenciais da **LabRole** obtidas via **IMDS**
+da EC2 (por isso `metadata_options { http_put_response_hop_limit = 2 }` no master/worker —
+sem isso os pods não alcançam o IMDS). Antes era só LocalStack interno (Lambda não roda lá),
+e por isso o e-mail nunca saía.
+
+> ⚠️ **Confirme a inscrição de e-mail!** Logo após o `apply`, a AWS envia um e-mail
+> *"AWS Notification - Subscription Confirmation"* para `notify_email`. **Clique no link**
+> uma vez; sem isso a Lambda publica mas nada chega à caixa. O output
+> `email_subscription_reminder` lembra disso.
 
 ## Pré-requisitos
 
@@ -20,7 +42,10 @@ Tudo usando a **LabRole** (não cria IAM), em `us-east-1`.
 ```bash
 cd infra/terraform
 
-cp terraform.tfvars.example terraform.tfvars   # ajuste se quiser
+cp terraform.tfvars.example terraform.tfvars   # ajuste: defina notify_email!
+
+# Empacota a Lambda a partir do código compilado (o Terraform zipa o dist/):
+npm run build --workspace services/lambda-email   # rode na RAIZ do repo
 
 terraform init
 terraform plan

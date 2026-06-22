@@ -23,6 +23,8 @@ npm-debug.log*
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+# Zip da Lambda gerado pelo archive_file (messaging.tf)
+infra/terraform/lambda-email.zip
 
 # LocalStack / Docker volumes
 .localstack/

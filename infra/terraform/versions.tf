@@ -7,5 +7,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    # Empacota a Lambda (zip do dist/) — ver data "archive_file" em messaging.tf.
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 }
