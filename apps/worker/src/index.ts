@@ -33,7 +33,9 @@ const logger = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
 // ---- Configuração ----
 const redisUrl = process.env.REDIS_URL ?? "redis://redis:6379";
-const awsEndpointUrl = process.env.AWS_ENDPOINT_URL ?? "http://localstack:4566";
+// Vazio por padrão → SDK usa a AWS real (credenciais da LabRole via IMDS, Fase 6).
+// Em dev (docker-compose / .env) esta var vem setada para o LocalStack.
+const awsEndpointUrl = process.env.AWS_ENDPOINT_URL ?? "";
 const awsRegion = process.env.AWS_REGION ?? "us-east-1";
 const queueName = process.env.QUEUE_NAME ?? "ticket-purchase-queue";
 const apiUrl = process.env.API_URL ?? "http://api:8080";

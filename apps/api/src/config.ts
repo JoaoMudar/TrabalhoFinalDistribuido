@@ -28,8 +28,13 @@ export const config = {
   /** String de conexão do Redis (locks com TTL + posição na fila virtual). */
   redisUrl: env("REDIS_URL", "redis://localhost:6379"),
 
-  /** Endpoint da AWS — aponta para o LocalStack em dev, vazio em prod (usa AWS real). */
-  awsEndpointUrl: env("AWS_ENDPOINT_URL", "http://localhost:4566"),
+  /**
+   * Endpoint da AWS. Em dev (docker-compose / .env) vem setado para o LocalStack;
+   * VAZIO por padrão → o SDK usa a AWS real (credenciais da LabRole via IMDS, na
+   * Fase 6). Não usar fallback para localhost aqui: no cluster AWS o ConfigMap
+   * remove esta var (overlay infra/k8s/overlays/aws) e queremos a AWS de verdade.
+   */
+  awsEndpointUrl: env("AWS_ENDPOINT_URL", ""),
 
   /** Região AWS. */
   awsRegion: env("AWS_REGION", "us-east-1"),
