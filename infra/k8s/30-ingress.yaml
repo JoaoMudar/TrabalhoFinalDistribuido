@@ -17,10 +17,13 @@ metadata:
   name: ingressos-web
   namespace: ingressos
 spec:
-  ingressClassName: nginx
+  # k3s já vem com Traefik como ingress controller (não há ingress-nginx).
+  ingressClassName: traefik
   rules:
-    - host: ingressos.local
-      http:
+    # Sem "host:" a regra casa com qualquer Host header — necessário para
+    # acessar pelo DNS do NLB (que não é "ingressos.local"). Para uso local,
+    # adicione "127.0.0.1 ingressos.local" ao hosts; ainda funciona.
+    - http:
         paths:
           - path: /
             pathType: Prefix
