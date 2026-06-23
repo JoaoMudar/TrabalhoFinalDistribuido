@@ -8,8 +8,11 @@
 #
 # Aqui provisionamos os recursos REAIS. A aplicacao (api/worker), rodando nos
 # pods do master, usa as credenciais da LabRole via IMDS (ver metadata_options
-# em master.tf) e o overlay infra/k8s/overlays/aws ESVAZIA o AWS_ENDPOINT_URL,
-# fazendo o SDK falar com a AWS de verdade em vez do LocalStack.
+# em master.tf) e o user-data do master (userdata/master-body.sh) ESVAZIA o
+# AWS_ENDPOINT_URL do ConfigMap via `kubectl patch --type=merge` (string vazia),
+# fazendo o SDK falar com a AWS de verdade em vez do LocalStack interno.
+# (Optou-se pelo patch imperativo em vez de overlay kustomize porque a base e'
+# ancestral do overlay e o kustomize acusaria ciclo — ver master-body.sh.)
 #
 # Fluxo do e-mail (decisao do usuario — ver ADR-009):
 #   pagamento -> API publica no SNS "order-confirmed"

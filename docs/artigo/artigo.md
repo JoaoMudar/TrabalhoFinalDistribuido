@@ -20,8 +20,9 @@ três problemas combinando uma **fila virtual** (AWS SQS) para amortecimento de 
 desacoplada do fluxo de compra (AWS SNS + AWS Lambda + SES). A persistência de dados de
 domínio usa **MongoDB**, e toda a aplicação (API REST, *workers* e *frontend*) é
 orquestrada em um **cluster Kubernetes**. O sistema foi validado de ponta a ponta em
-ambiente local (Docker Compose + LocalStack) e a infraestrutura de nuvem foi
-projetada para o **AWS Academy Learner Lab** com *cluster* k3s sobre EC2. Um teste de
+ambiente local (Docker Compose + LocalStack) e **também implantado na nuvem** sobre o
+**AWS Academy Learner Lab**, em um *cluster* k3s sobre EC2 provisionado por Terraform,
+com SQS, SNS e Lambda reais. Um teste de
 carga com k6 simulando a abertura de vendas demonstrou empiricamente a tese central:
 sob um pico de ~30 requisições/s, **463 compras foram enfileiradas com 100% de
 respostas HTTP 202 e zero erros**, com a profundidade da fila chegando a 418 itens e
@@ -313,8 +314,9 @@ Principais escolhas tecnológicas e suas justificativas (registradas como ADRs e
 
 ### 4.1 Ambiente de nuvem: AWS Academy Learner Lab
 
-A entrega na nuvem foi projetada para o **AWS Academy Learner Lab**, que impõe
-restrições respeitadas pela infraestrutura como código (IaC):
+A entrega na nuvem foi implantada no **AWS Academy Learner Lab**, que impõe
+restrições respeitadas pela infraestrutura como código (IaC) — o provisionamento
+concreto via Terraform é detalhado na seção 5.6:
 
 - **IAM travado:** não é possível criar *roles*/*policies*; reutiliza-se apenas a
   *role* pré-existente **`LabRole`** (o Terraform a **referencia**, nunca declara
@@ -328,18 +330,25 @@ restrições respeitadas pela infraestrutura como código (IaC):
 ```mermaid
 flowchart TB
   subgraph LL["AWS Academy Learner Lab (us-east-1)"]
+    nlb[NLB :80 app / :6443 k3s-API]
     subgraph EC2["EC2 + k3s (cluster Kubernetes)"]
-      pods[web · api · worker]
+      master["master (k3s server + pods api/worker/web)"]
+      workers["workers (ASG, k3s agents)"]
     end
-    sqs[(SQS real)]
-    sns[(SNS real)]
-    lambda[Lambda real]
-    ses[SES]
+    sqs[(SQS order-purchase)]
+    sns1[(SNS order-confirmed)]
+    lambda[Lambda email-confirmation]
+    sns2[(SNS order-emails)]
+    mail[(e-mail do destinatario)]
   end
-  pods -->|usa LabRole| sqs
-  pods --> sns
-  sns --> lambda
-  lambda --> ses
+  nlb --> master
+  nlb --> workers
+  workers -. join via IP privado fixo .-> master
+  master -->|credenciais LabRole via IMDS| sqs
+  master -->|publica| sns1
+  sns1 --> lambda
+  lambda -->|publica| sns2
+  sns2 --> mail
 ```
 
 ---
@@ -388,9 +397,19 @@ novo), o que tornou o *worker* resiliente a reinícios do LocalStack.
 
 Após o pagamento, a API publica `{orderId, eventId, seatId, userEmail}` no tópico SNS
 `order-confirmed`. Uma **Lambda** (`nodejs20.x`, empacotada como CommonJS) assina esse
-tópico e envia o e-mail de confirmação via **SES**. O desacoplamento é total: uma falha
-no envio de e-mail **não derruba** o pagamento. Em dev, as mensagens ficam
-inspecionáveis em `GET /_aws/ses` do LocalStack; em produção, usa-se o SES real.
+tópico e formata a confirmação. O desacoplamento é total: uma falha no envio de e-mail
+**não derruba** o pagamento. O **destino do e-mail** muda conforme o ambiente, sem
+alterar o fluxo:
+
+- **Dev (Docker Compose + LocalStack):** a Lambda envia via **SES**; as mensagens ficam
+  inspecionáveis em `GET /_aws/ses`.
+- **Nuvem (AWS Academy Learner Lab):** a Lambda **publica em um segundo tópico SNS**
+  (`order-emails`), que tem uma **assinatura de e-mail** entregando na caixa do
+  destinatário. Optou-se por SNS→Lambda→SNS-email em vez de SES direto por dois motivos:
+  (i) mantém a **Lambda no caminho** (requisito obrigatório da avaliação) e (ii) **evita
+  o *sandbox* do SES**, que exigiria verificar individualmente cada destinatário. O
+  *handler* ramifica por uma variável de ambiente (`NOTIFY_TOPIC_ARN`): presente, publica
+  no SNS; ausente, envia via SES — o **mesmo código** serve aos dois ambientes.
 
 ### 5.4 Frontend (React + Vite)
 
@@ -413,6 +432,45 @@ persistente), Redis, LocalStack, *deployments* de api (×2), worker e web, e um 
 orquestrador só roteie tráfego a pods prontos e reinicie os travados. Os **mesmos
 manifests** servem para o cluster local (kind/minikube) e para o k3s/EC2 na nuvem —
 muda apenas o contexto do `kubectl`.
+
+### 5.6 Provisionamento na nuvem (Terraform sobre o AWS Academy Learner Lab)
+
+A infraestrutura de nuvem é descrita como código em `infra/terraform/` e foi **implantada
+e validada em um cluster vivo**. O projeto Terraform reflete as restrições do Learner Lab
+(seção 4.1) e resolve os problemas concretos de rodar um cluster k3s real sobre EC2:
+
+- **Master como *pet*, não como *cattle*:** o nó *master* é uma `aws_instance` única (não
+  um *Auto Scaling Group*), porque guarda o estado do *control plane* do k3s (etcd/sqlite).
+  Um ASG apenas recriaria um nó **vazio** se o atual morresse, subindo um cluster novo — o
+  que não é *self-healing* de verdade. As **workers**, por serem descartáveis, ficam em um
+  ASG com *launch template*: cada uma instala o *k3s agent* no *boot* e faz *join* sozinha.
+
+- **IP privado fixo para o *join*:** o ASG não admite IP privado fixo, mas o *join* das
+  workers precisa de um endereço do *master* **conhecido já no `plan`**. Calcula-se um IP
+  estável com `cidrhost(subnet, 10)` (longe dos IPs reservados da AWS) e injeta-se esse
+  valor no *user-data* das workers. O *master* registra-se manualmente nos *target groups*.
+
+- **NLB como ponto de entrada estável:** um único *Network Load Balancer* (L4/TCP) expõe a
+  porta **80** (entrada HTTP da aplicação, atendida pelo Traefik/ServiceLB do k3s em todos
+  os nós) e a porta **6443** (endpoint estável do *k3s API*, incluído no `--tls-san` do
+  certificado para `kubectl` externo). O roteamento HTTP (L7) fica por conta do Traefik.
+
+- **Identidade sem criar IAM:** a `LabRole` pré-existente é apenas **referenciada** (como
+  *instance profile* das EC2 e como *role* de execução da Lambda). Os pods `api`/`worker`
+  obtêm as credenciais da `LabRole` pelo **IMDS**; para que o *metadata service* seja
+  alcançável de **dentro** do contêiner, foi necessário `http_put_response_hop_limit = 2`
+  (o *default* `1` bloqueia o salto adicional do *namespace* de rede do pod).
+
+- **Apontar a aplicação para a AWS real:** o *user-data* do *master*, após aplicar os
+  manifests, **esvazia a variável `AWS_ENDPOINT_URL`** do *ConfigMap* via
+  `kubectl patch --type=merge` (string vazia, tratada como "não definido" pelo código) e
+  reinicia `api`/`worker`. Sem essa variável, o AWS SDK fala com os serviços **reais**
+  (SQS/SNS/Lambda) em vez do LocalStack interno — que não executa Lambda no cluster.
+
+A demonstração na nuvem é **efêmera por desenho** (orçamento limitado): o ciclo é
+**provisionar → demonstrar ao professor → `terraform destroy` imediatamente**. Após o
+`apply`, a única ação manual necessária é **confirmar a inscrição de e-mail** (a AWS envia
+um link de confirmação para o endereço cadastrado no tópico `order-emails`).
 
 ---
 
@@ -526,5 +584,7 @@ http://localhost:9090 · **e-mails (SES)** http://localhost:4566/_aws/ses
 ## Apêndice B — Registro de decisões (ADRs)
 
 Todas as decisões de arquitetura estão registradas em `docs/decisoes.md` (ADR-000 a
-ADR-008), e os diagramas-fonte em Mermaid em `docs/diagramas/arquitetura.md`. Esses
-documentos constituem a metodologia detalhada deste trabalho.
+ADR-009 — incluindo o ADR-009, que documenta a mensageria real na nuvem via Terraform e
+o caminho de e-mail SNS→Lambda→SNS-email), e os diagramas-fonte em Mermaid em
+`docs/diagramas/arquitetura.md`. Esses documentos constituem a metodologia detalhada
+deste trabalho.

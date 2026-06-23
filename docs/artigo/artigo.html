@@ -51,8 +51,9 @@ três problemas combinando uma <strong>fila virtual</strong> (AWS SQS) para amor
 desacoplada do fluxo de compra (AWS SNS + AWS Lambda + SES). A persistência de dados de
 domínio usa <strong>MongoDB</strong>, e toda a aplicação (API REST, <em>workers</em> e <em>frontend</em>) é
 orquestrada em um <strong>cluster Kubernetes</strong>. O sistema foi validado de ponta a ponta em
-ambiente local (Docker Compose + LocalStack) e a infraestrutura de nuvem foi
-projetada para o <strong>AWS Academy Learner Lab</strong> com <em>cluster</em> k3s sobre EC2. Um teste de
+ambiente local (Docker Compose + LocalStack) e <strong>também implantado na nuvem</strong> sobre o
+<strong>AWS Academy Learner Lab</strong>, em um <em>cluster</em> k3s sobre EC2 provisionado por Terraform,
+com SQS, SNS e Lambda reais. Um teste de
 carga com k6 simulando a abertura de vendas demonstrou empiricamente a tese central:
 sob um pico de ~30 requisições/s, <strong>463 compras foram enfileiradas com 100% de
 respostas HTTP 202 e zero erros</strong>, com a profundidade da fila chegando a 418 itens e
@@ -160,11 +161,12 @@ reiniciando o que falha e roteando tráfego apenas para instâncias saudáveis.<
 do <strong>caminho de processamento</strong> (controlado, que efetiva a reserva). O usuário nunca
 bate diretamente no banco durante o pico: ele recebe um <strong>ticket de fila</strong> e acompanha
 sua posição por <em>polling</em>.</p>
-<pre><code class="language-mermaid">flowchart LR
+<pre class="mermaid">
+flowchart LR
     subgraph Cliente
         WEB[Frontend React]
     end
-    subgraph Cluster[&quot;Kubernetes (kind/minikube local · k3s/EC2 na AWS)&quot;]
+    subgraph Cluster["Kubernetes (kind/minikube local · k3s/EC2 na AWS)"]
         API[API REST]
         WORKER[Worker]
     end
@@ -173,21 +175,21 @@ sua posição por <em>polling</em>.</p>
         SNS[(SNS)]
     end
     subgraph Dados
-        REDIS[(Redis&lt;br/&gt;locks + fila)]
-        MONGO[(MongoDB&lt;br/&gt;dados)]
+        REDIS[(Redis<br/>locks + fila)]
+        MONGO[(MongoDB<br/>dados)]
     end
     LAMBDA[Lambda e-mail]
 
-    WEB --&gt;|REST /api| API
-    API --&gt;|enfileira| SQS
-    API --&gt; REDIS
-    API --&gt; MONGO
-    SQS --&gt;|long poll| WORKER
-    WORKER --&gt;|POST /reserve| API
-    WORKER --&gt; REDIS
-    API --&gt;|publica| SNS
-    SNS --&gt; LAMBDA
-</code></pre>
+    WEB -->|REST /api| API
+    API -->|enfileira| SQS
+    API --> REDIS
+    API --> MONGO
+    SQS -->|long poll| WORKER
+    WORKER -->|POST /reserve| API
+    WORKER --> REDIS
+    API -->|publica| SNS
+    SNS --> LAMBDA
+</pre>
 <h3>3.2 Fluxo principal (caminho feliz)</h3>
 <ol>
 <li>O usuário escolhe um evento e um assento no <em>frontend</em>.</li>
@@ -206,7 +208,8 @@ que tenta o <strong>lock no Redis</strong> (<code>SET NX EX 300</code>):<ul>
 <li>A <strong>Lambda</strong> assina o SNS e envia o <strong>e-mail de confirmação</strong> via SES.</li>
 <li>Se o TTL expira sem pagamento, o <em>lock</em> cai sozinho e o assento volta a ficar livre.</li>
 </ol>
-<pre><code class="language-mermaid">sequenceDiagram
+<pre class="mermaid">
+sequenceDiagram
     autonumber
     actor U as Usuário
     participant W as Frontend (React)
@@ -218,36 +221,36 @@ que tenta o <strong>lock no Redis</strong> (<code>SET NX EX 300</code>):<ul>
     participant S as SNS (order-confirmed)
     participant L as Lambda (e-mail)
 
-    U-&gt;&gt;W: Escolhe evento e assento
-    W-&gt;&gt;A: POST .../purchase (intenção)
-    A-&gt;&gt;R: Grava ticket + INCR queue:seq
-    A-&gt;&gt;Q: Envia mensagem
-    A--&gt;&gt;W: 202 { ticketId, position }
+    U->>W: Escolhe evento e assento
+    W->>A: POST .../purchase (intenção)
+    A->>R: Grava ticket + INCR queue:seq
+    A->>Q: Envia mensagem
+    A-->>W: 202 { ticketId, position }
     loop Polling (GET /queue/:id)
-        W-&gt;&gt;A: Consulta estado/posição
-        A-&gt;&gt;R: Lê ticket + contadores
+        W->>A: Consulta estado/posição
+        A->>R: Lê ticket + contadores
     end
-    K-&gt;&gt;Q: Consome mensagem (long poll)
-    Note over K,A: O worker NÃO fala com o Mongo:&lt;br/&gt;delega a reserva à API (fonte única de verdade)
-    K-&gt;&gt;A: POST .../reserve
-    A-&gt;&gt;R: SET lock:seat NX EX 300
+    K->>Q: Consome mensagem (long poll)
+    Note over K,A: O worker NÃO fala com o Mongo:<br/>delega a reserva à API (fonte única de verdade)
+    K->>A: POST .../reserve
+    A->>R: SET lock:seat NX EX 300
     alt Lock obtido
-        A-&gt;&gt;M: Cria pedido (pending)
-        A--&gt;&gt;K: 201 (orderId, expiresAt)
-        K-&gt;&gt;R: Atualiza ticket = reserved
-        U-&gt;&gt;W: &quot;Paga&quot; (mock) dentro do TTL
-        W-&gt;&gt;A: POST .../pay
-        A-&gt;&gt;R: Confere lock + libera (Lua)
-        A-&gt;&gt;M: Pedido = paid, assento = sold
-        A-&gt;&gt;S: Publica &quot;pedido confirmado&quot;
-        S-&gt;&gt;L: Invoca Lambda
-        L--&gt;&gt;U: E-mail de confirmação (SES)
+        A->>M: Cria pedido (pending)
+        A-->>K: 201 (orderId, expiresAt)
+        K->>R: Atualiza ticket = reserved
+        U->>W: "Paga" (mock) dentro do TTL
+        W->>A: POST .../pay
+        A->>R: Confere lock + libera (Lua)
+        A->>M: Pedido = paid, assento = sold
+        A->>S: Publica "pedido confirmado"
+        S->>L: Invoca Lambda
+        L-->>U: E-mail de confirmação (SES)
     else Lock falhou (assento tomado)
-        A--&gt;&gt;K: 409
-        K-&gt;&gt;R: Atualiza ticket = failed
+        A-->>K: 409
+        K->>R: Atualiza ticket = failed
     end
-    note over R: Se o TTL expira sem pagamento,&lt;br/&gt;o lock cai e o assento volta a ficar livre
-</code></pre>
+    note over R: Se o TTL expira sem pagamento,<br/>o lock cai e o assento volta a ficar livre
+</pre>
 <h3>3.3 Decisão de projeto central: o <em>worker</em> não acessa o banco diretamente</h3>
 <p>Em vez de duplicar a lógica de <em>lock</em> e persistência no <em>worker</em>, decidimos que o
 <strong>worker chama o endpoint <code>reserve</code> da própria API</strong>. Assim, a API permanece a <strong>única
@@ -264,25 +267,26 @@ componentes:</p>
 </ul>
 <p>A entrada externa é <strong>única</strong>, por um <strong>Ingress</strong> que aponta para o <em>frontend</em> (Nginx);
 o <em>backend</em> não fica exposto diretamente — o Nginx faz o <em>proxy</em> interno de <code>/api</code>.</p>
-<pre><code class="language-mermaid">flowchart TB
-  ing[Ingress] --&gt; web
-  subgraph ns_app[&quot;namespace: ingressos (aplicação, sem estado)&quot;]
+<pre class="mermaid">
+flowchart TB
+  ing[Ingress] --> web
+  subgraph ns_app["namespace: ingressos (aplicação, sem estado)"]
     web[web - Nginx + SPA]
     api[api - Fastify x2]
     worker[worker]
-    web --&gt;|/api| api
-    worker --&gt;|reserve| api
+    web -->|/api| api
+    worker -->|reserve| api
   end
-  subgraph ns_data[&quot;namespace: ingressos-data (estado)&quot;]
+  subgraph ns_data["namespace: ingressos-data (estado)"]
     mongo[(MongoDB + PVC)]
     redis[(Redis)]
     ls[LocalStack - SQS/SNS/SES]
   end
-  api --&gt; mongo
-  api --&gt; redis
-  api --&gt;|SQS/SNS| ls
-  worker --&gt;|poll SQS| ls
-</code></pre>
+  api --> mongo
+  api --> redis
+  api -->|SQS/SNS| ls
+  worker -->|poll SQS| ls
+</pre>
 <hr>
 <h2>4. Tecnologias e justificativas</h2>
 <p>A tabela abaixo mapeia cada <strong>requisito de avaliação</strong> ao <strong>componente</strong> que o atende —
@@ -399,8 +403,9 @@ serve de rastreabilidade entre a especificação e a implementação.</p>
 </tr>
 </tbody></table>
 <h3>4.1 Ambiente de nuvem: AWS Academy Learner Lab</h3>
-<p>A entrega na nuvem foi projetada para o <strong>AWS Academy Learner Lab</strong>, que impõe
-restrições respeitadas pela infraestrutura como código (IaC):</p>
+<p>A entrega na nuvem foi implantada no <strong>AWS Academy Learner Lab</strong>, que impõe
+restrições respeitadas pela infraestrutura como código (IaC) — o provisionamento
+concreto via Terraform é detalhado na seção 5.6:</p>
 <ul>
 <li><strong>IAM travado:</strong> não é possível criar <em>roles</em>/<em>policies</em>; reutiliza-se apenas a
 <em>role</em> pré-existente <strong><code>LabRole</code></strong> (o Terraform a <strong>referencia</strong>, nunca declara
@@ -411,21 +416,29 @@ restrições respeitadas pela infraestrutura como código (IaC):</p>
 <li><strong>EKS bloqueado/caro</strong> → uso de <strong>k3s sobre EC2</strong> (Kubernetes real, leve).</li>
 <li><strong>ECR pode faltar</strong> → imagens via Docker Hub ou <code>docker save</code>/<code>load</code> nas EC2.</li>
 </ul>
-<pre><code class="language-mermaid">flowchart TB
-  subgraph LL[&quot;AWS Academy Learner Lab (us-east-1)&quot;]
-    subgraph EC2[&quot;EC2 + k3s (cluster Kubernetes)&quot;]
-      pods[web · api · worker]
+<pre class="mermaid">
+flowchart TB
+  subgraph LL["AWS Academy Learner Lab (us-east-1)"]
+    nlb[NLB :80 app / :6443 k3s-API]
+    subgraph EC2["EC2 + k3s (cluster Kubernetes)"]
+      master["master (k3s server + pods api/worker/web)"]
+      workers["workers (ASG, k3s agents)"]
     end
-    sqs[(SQS real)]
-    sns[(SNS real)]
-    lambda[Lambda real]
-    ses[SES]
+    sqs[(SQS order-purchase)]
+    sns1[(SNS order-confirmed)]
+    lambda[Lambda email-confirmation]
+    sns2[(SNS order-emails)]
+    mail[(e-mail do destinatario)]
   end
-  pods --&gt;|usa LabRole| sqs
-  pods --&gt; sns
-  sns --&gt; lambda
-  lambda --&gt; ses
-</code></pre>
+  nlb --> master
+  nlb --> workers
+  workers -. join via IP privado fixo .-> master
+  master -->|credenciais LabRole via IMDS| sqs
+  master -->|publica| sns1
+  sns1 --> lambda
+  lambda -->|publica| sns2
+  sns2 --> mail
+</pre>
 <hr>
 <h2>5. Implementação por componente</h2>
 <h3>5.1 Backend (API REST — Fastify)</h3>
@@ -505,9 +518,20 @@ novo), o que tornou o <em>worker</em> resiliente a reinícios do LocalStack.</p>
 <h3>5.3 <em>Serverless</em> (Lambda de e-mail)</h3>
 <p>Após o pagamento, a API publica <code>{orderId, eventId, seatId, userEmail}</code> no tópico SNS
 <code>order-confirmed</code>. Uma <strong>Lambda</strong> (<code>nodejs20.x</code>, empacotada como CommonJS) assina esse
-tópico e envia o e-mail de confirmação via <strong>SES</strong>. O desacoplamento é total: uma falha
-no envio de e-mail <strong>não derruba</strong> o pagamento. Em dev, as mensagens ficam
-inspecionáveis em <code>GET /_aws/ses</code> do LocalStack; em produção, usa-se o SES real.</p>
+tópico e formata a confirmação. O desacoplamento é total: uma falha no envio de e-mail
+<strong>não derruba</strong> o pagamento. O <strong>destino do e-mail</strong> muda conforme o ambiente, sem
+alterar o fluxo:</p>
+<ul>
+<li><strong>Dev (Docker Compose + LocalStack):</strong> a Lambda envia via <strong>SES</strong>; as mensagens ficam
+inspecionáveis em <code>GET /_aws/ses</code>.</li>
+<li><strong>Nuvem (AWS Academy Learner Lab):</strong> a Lambda <strong>publica em um segundo tópico SNS</strong>
+(<code>order-emails</code>), que tem uma <strong>assinatura de e-mail</strong> entregando na caixa do
+destinatário. Optou-se por SNS→Lambda→SNS-email em vez de SES direto por dois motivos:
+(i) mantém a <strong>Lambda no caminho</strong> (requisito obrigatório da avaliação) e (ii) <strong>evita
+o <em>sandbox</em> do SES</strong>, que exigiria verificar individualmente cada destinatário. O
+<em>handler</em> ramifica por uma variável de ambiente (<code>NOTIFY_TOPIC_ARN</code>): presente, publica
+no SNS; ausente, envia via SES — o <strong>mesmo código</strong> serve aos dois ambientes.</li>
+</ul>
 <h3>5.4 Frontend (React + Vite)</h3>
 <p>A SPA é uma <strong>máquina de estados</strong> linear — <code>events → seats → queue → checkout → done</code> —
 em que cada passo corresponde a uma etapa da arquitetura, o que facilita a explicação na
@@ -526,6 +550,44 @@ persistente), Redis, LocalStack, <em>deployments</em> de api (×2), worker e web
 orquestrador só roteie tráfego a pods prontos e reinicie os travados. Os <strong>mesmos
 manifests</strong> servem para o cluster local (kind/minikube) e para o k3s/EC2 na nuvem —
 muda apenas o contexto do <code>kubectl</code>.</p>
+<h3>5.6 Provisionamento na nuvem (Terraform sobre o AWS Academy Learner Lab)</h3>
+<p>A infraestrutura de nuvem é descrita como código em <code>infra/terraform/</code> e foi <strong>implantada
+e validada em um cluster vivo</strong>. O projeto Terraform reflete as restrições do Learner Lab
+(seção 4.1) e resolve os problemas concretos de rodar um cluster k3s real sobre EC2:</p>
+<ul>
+<li><p><strong>Master como <em>pet</em>, não como <em>cattle</em>:</strong> o nó <em>master</em> é uma <code>aws_instance</code> única (não
+um <em>Auto Scaling Group</em>), porque guarda o estado do <em>control plane</em> do k3s (etcd/sqlite).
+Um ASG apenas recriaria um nó <strong>vazio</strong> se o atual morresse, subindo um cluster novo — o
+que não é <em>self-healing</em> de verdade. As <strong>workers</strong>, por serem descartáveis, ficam em um
+ASG com <em>launch template</em>: cada uma instala o <em>k3s agent</em> no <em>boot</em> e faz <em>join</em> sozinha.</p>
+</li>
+<li><p><strong>IP privado fixo para o <em>join</em>:</strong> o ASG não admite IP privado fixo, mas o <em>join</em> das
+workers precisa de um endereço do <em>master</em> <strong>conhecido já no <code>plan</code></strong>. Calcula-se um IP
+estável com <code>cidrhost(subnet, 10)</code> (longe dos IPs reservados da AWS) e injeta-se esse
+valor no <em>user-data</em> das workers. O <em>master</em> registra-se manualmente nos <em>target groups</em>.</p>
+</li>
+<li><p><strong>NLB como ponto de entrada estável:</strong> um único <em>Network Load Balancer</em> (L4/TCP) expõe a
+porta <strong>80</strong> (entrada HTTP da aplicação, atendida pelo Traefik/ServiceLB do k3s em todos
+os nós) e a porta <strong>6443</strong> (endpoint estável do <em>k3s API</em>, incluído no <code>--tls-san</code> do
+certificado para <code>kubectl</code> externo). O roteamento HTTP (L7) fica por conta do Traefik.</p>
+</li>
+<li><p><strong>Identidade sem criar IAM:</strong> a <code>LabRole</code> pré-existente é apenas <strong>referenciada</strong> (como
+<em>instance profile</em> das EC2 e como <em>role</em> de execução da Lambda). Os pods <code>api</code>/<code>worker</code>
+obtêm as credenciais da <code>LabRole</code> pelo <strong>IMDS</strong>; para que o <em>metadata service</em> seja
+alcançável de <strong>dentro</strong> do contêiner, foi necessário <code>http_put_response_hop_limit = 2</code>
+(o <em>default</em> <code>1</code> bloqueia o salto adicional do <em>namespace</em> de rede do pod).</p>
+</li>
+<li><p><strong>Apontar a aplicação para a AWS real:</strong> o <em>user-data</em> do <em>master</em>, após aplicar os
+manifests, <strong>esvazia a variável <code>AWS_ENDPOINT_URL</code></strong> do <em>ConfigMap</em> via
+<code>kubectl patch --type=merge</code> (string vazia, tratada como &quot;não definido&quot; pelo código) e
+reinicia <code>api</code>/<code>worker</code>. Sem essa variável, o AWS SDK fala com os serviços <strong>reais</strong>
+(SQS/SNS/Lambda) em vez do LocalStack interno — que não executa Lambda no cluster.</p>
+</li>
+</ul>
+<p>A demonstração na nuvem é <strong>efêmera por desenho</strong> (orçamento limitado): o ciclo é
+<strong>provisionar → demonstrar ao professor → <code>terraform destroy</code> imediatamente</strong>. Após o
+<code>apply</code>, a única ação manual necessária é <strong>confirmar a inscrição de e-mail</strong> (a AWS envia
+um link de confirmação para o endereço cadastrado no tópico <code>order-emails</code>).</p>
 <hr>
 <h2>6. Observabilidade e resultados do teste de carga</h2>
 <h3>6.1 Observabilidade</h3>
@@ -542,11 +604,12 @@ distribuída:</p>
 momento do <em>scrape</em>, garantindo valor sempre fresco. O <strong>Prometheus</strong> coleta a cada 5 s
 e o <strong>Grafana</strong> sobe com <em>datasource</em> e <em>dashboard</em> <strong>provisionados</strong> (versionados no
 repositório), sem cliques manuais na demonstração.</p>
-<pre><code class="language-mermaid">flowchart LR
-  api[API /metrics] --&gt; prom[Prometheus]
-  worker[Worker /metrics] --&gt; prom
-  prom --&gt; graf[Grafana dashboard &#39;Ingressos&#39;]
-</code></pre>
+<pre class="mermaid">
+flowchart LR
+  api[API /metrics] --> prom[Prometheus]
+  worker[Worker /metrics] --> prom
+  prom --> graf[Grafana dashboard 'Ingressos']
+</pre>
 <h3>6.2 Teste de carga</h3>
 <p>Para validar empiricamente a tese central, usamos o <strong>k6</strong> com um perfil
 <code>ramping-arrival-rate</code> (taxa de <strong>chegada</strong> controlada, que modela a abertura de vendas
@@ -639,8 +702,10 @@ docker compose up --build -d
 <a href="http://localhost:9090">http://localhost:9090</a> · <strong>e-mails (SES)</strong> <a href="http://localhost:4566/_aws/ses">http://localhost:4566/_aws/ses</a></p>
 <h2>Apêndice B — Registro de decisões (ADRs)</h2>
 <p>Todas as decisões de arquitetura estão registradas em <code>docs/decisoes.md</code> (ADR-000 a
-ADR-008), e os diagramas-fonte em Mermaid em <code>docs/diagramas/arquitetura.md</code>. Esses
-documentos constituem a metodologia detalhada deste trabalho.</p>
+ADR-009 — incluindo o ADR-009, que documenta a mensageria real na nuvem via Terraform e
+o caminho de e-mail SNS→Lambda→SNS-email), e os diagramas-fonte em Mermaid em
+<code>docs/diagramas/arquitetura.md</code>. Esses documentos constituem a metodologia detalhada
+deste trabalho.</p>
 
 <script>
   mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose',
